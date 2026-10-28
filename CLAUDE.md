@@ -7,7 +7,7 @@ Live at **https://clarity.zeedra.in**. Repo: https://github.com/zeedradigital/cl
 - Vercel project `gap-dashboard` (team `team_cWGww3OoXzOKOZI1WteDadPw`, project `prj_3fIlXzbsjTTO6yjYK6xBcQibQgA8`).
 - **Vercel is NOT linked to GitHub** — pushing does not deploy. Faiz deploys by running: `! cd /c/landing-pages/clarity && vercel --prod --yes`
 - After a deploy, verify on the live tab (e.g. `typeof someNewFunction`) and have Faiz refresh the phone (close + reopen).
-- `.vercelignore` keeps `docs/`, `testing/`, `.vercel`, `CLAUDE.md` off the website.
+- `.vercelignore` keeps `docs/`, `testing/`, `CLAUDE.md` off the website.
 
 ## Data
 - State object `S` → localStorage `gd_v4_<userId>` and Supabase table `user_state` (`user_id`, `data`, `updated_at`), via `save()` → `scheduleSync()` → `pushRemote()`; `pullRemote()` → `mergeState()` on login.
