@@ -429,7 +429,7 @@ body.adding .fab-circle{display:none;}
   <div class="smart-hint" id="smartHint" style="display:none;"></div>
   <!-- New-tag category picker — appears only for a brand-new, unrecognized note -->
   <div id="newTagCatPicker" style="display:none;">
-    <div class="src-line"><span class="src-lbl">File as</span></div>
+    <div class="src-line"><span class="src-lbl">Type</span></div>
     <div class="chip-row" id="newTagCatSel" style="margin-bottom:8px;"></div>
   </div>
 
@@ -472,7 +472,6 @@ body.adding .fab-circle{display:none;}
     <button class="big-save" style="margin:12px 0 0;" onclick="saveSettings()">Save Target</button>
   </div>
   <div id="loansMount"></div>
-  <div id="catsMount"></div>
   <div id="tagsMount"></div>
   <div class="card">
     <a href="help.html" style="color:var(--accent);font-size:13px;font-weight:700;text-decoration:none;display:block;">How Clarity works — simple guide ›</a>
@@ -582,6 +581,7 @@ function defaultState(){return{
   },
   foodMode:{}, // food tag → 'home' | 'out' (overrides the keyword seed)
   catNature:{}, // built-in category → nature override, set in Settings
+  tagNature:{}, // tag → 'mean'|'ind'|'inv'|'none' — a tag's own type, no category in between
   deletedIds:[], // ids of deleted entries — kept so device merges never bring them back
   balanceFixes:[], // [{date,amount,from,to}] — corrections that line the logs up with the real bank + cash total
   greenMonths:[], // months that ended green — permanent dots
@@ -853,7 +853,6 @@ function renderEarnSpeed(target){
   requestAnimationFrame(()=>{requestAnimationFrame(()=>{const n=document.getElementById('gNeedle'); if(n) n.style.transform=`rotate(${deg}deg)`;});});
 }
 
-function toggleCatTags(id){ const e=document.getElementById('ct_'+id); if(e) e.style.display=e.style.display==='none'?'block':'none'; }
 
 function awardGreenDots(){
   if(!S.greenMonths) S.greenMonths=[];
@@ -992,51 +991,40 @@ function renderDash(){
   const pe=document.getElementById('p_exp'); pe.textContent=fmt(projExp); pe.className='rv '+(target&&projExp>target?'cr':'cy');
   const pg=document.getElementById('p_gap'); pg.textContent=(projSurplus>0?'+':projSurplus<0?'−':'')+fmt(Math.abs(projSurplus)); pg.className='rv '+(projSurplus>=0?'cg':'cr');
 
-  // Categories — tap a row to see its tags (which notes the money went to)
-  const totals={};
-  txs.filter(t=>t.type==='expense').forEach(t=>{totals[t.cat]=(totals[t.cat]||0)+t.amount;});
-  const sorted=Object.entries(totals).sort((a,b)=>b[1]-a[1]);
+  // Tags — where the money went, biggest first; tap one to see every entry behind it
+  const totals={}; let blankAmt=0;
+  txs.filter(t=>t.type==='expense').forEach(t=>{
+    const k=(t.note||'').trim().toLowerCase();
+    if(!k){ blankAmt+=t.amount; return; }
+    if(!totals[k]) totals[k]={label:t.note.trim(),amt:0,cat:t.cat};
+    totals[k].amt+=t.amount;
+  });
+  const sorted=Object.entries(totals).sort((a,b)=>b[1].amt-a[1].amt);
   const cg=document.getElementById('catGrid');
-  const maxCat=sorted.length?sorted[0][1]:1;
-  if(!sorted.length){
+  const maxAmt=sorted.length?sorted[0][1].amt:1;
+  if(!sorted.length&&!blankAmt){
     cg.innerHTML='<div style="text-align:center;color:var(--muted);padding:14px;font-size:12px;background:var(--card);border-radius:12px;border:1px solid var(--border);">No expenses yet this month</div>';
   } else {
     // gentle door for unlabelled money — never shaming, always fixable
-    const otherAmt=totals['other']||0;
-    const nudge=(otherAmt>0&&spent>0&&otherAmt/spent>0.2)
-      ?`<div style="font-size:12px;font-weight:600;color:var(--yellow);background:var(--yellow-soft);border:1px solid var(--yellow-line);border-radius:10px;padding:9px 12px;margin-bottom:8px;">${fmt(otherAmt)} untagged this month — tap entries in History to name them</div>`
+    const nudge=(blankAmt>0&&spent>0&&blankAmt/spent>0.2)
+      ?`<div style="font-size:12px;font-weight:600;color:var(--yellow);background:var(--yellow-soft);border:1px solid var(--yellow-line);border-radius:10px;padding:9px 12px;margin-bottom:8px;">${fmt(blankAmt)} untagged this month — tap entries in History to name them</div>`
       :'';
-    // price tag on the month's indulgence — only when the month itself is struggling
+    // price tag on the month's non-essentials — only when the month itself is struggling
     const duelNow=duelFor(S.vy,S.vm);
     const hardTimes=(state==='bad'||state==='wait');
     const ddNow=duelNow.non>0?debtDaysStr(duelNow.non):null;
     const priceLine=(hardTimes&&ddNow)
-      ?`<div style="font-size:12px;font-weight:600;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:10px;padding:9px 12px;margin-bottom:8px;">Indulgence this month: ${fmt(duelNow.non)} — that's ${ddNow}</div>`
+      ?`<div style="font-size:12px;font-weight:600;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:10px;padding:9px 12px;margin-bottom:8px;">Non-essential this month: ${fmt(duelNow.non)} — that's ${ddNow}</div>`
       :'';
-    cg.innerHTML=priceLine+nudge+`<div class="card" style="padding:12px;">`+sorted.map(([id,amt])=>{
-      const c=catInfo(id); const pctBar=Math.round(amt/maxCat*100);
-      // tag breakdown within this category, biggest first
-      const tt={};
-      txs.forEach(t=>{
-        if(t.type!=='expense'||t.cat!==id) return;
-        const key=(t.note||'').trim().toLowerCase()===c.label.toLowerCase()?'(no tag)':(t.note||'(no tag)').trim();
-        tt[key]=(tt[key]||0)+t.amount;
-      });
-      const tagRows=Object.entries(tt).sort((a,b)=>b[1]-a[1]).map(([lbl,v])=>
-        `<div style="display:flex;justify-content:space-between;padding:5px 0 5px 16px;font-size:12px;border-bottom:1px solid var(--card2);">
-          <span style="color:var(--muted);">${esc(lbl)}</span><span style="font-weight:600;font-variant-numeric:tabular-nums;">${fmt(v)}</span>
-        </div>`).join('');
-      return `<div style="margin-bottom:10px;">
-        <div onclick="toggleCatTags('${id}')" style="cursor:pointer;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
-            <span style="font-size:12px;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${c.color};margin-right:6px;"></span>${c.label}</span>
-            <span style="font-size:12px;font-weight:700;">${fmt(amt)} <span style="color:var(--muted);font-weight:400;">›</span></span>
-          </div>
-          <div class="prog-bar"><div class="prog-fill" style="width:${pctBar}%;background:${c.color||'var(--accent)'}"></div></div>
+    const legend=`<div style="display:flex;flex-wrap:wrap;gap:4px 12px;font-size:10px;color:var(--muted);margin-bottom:10px;">${Object.keys(TYPE_LBL).map(n=>`<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${TYPE_COL[n]};margin-right:4px;"></span>${TYPE_LBL[n]}</span>`).join('')}</div>`;
+    cg.innerHTML=priceLine+nudge+(sorted.length?`<div class="card" style="padding:12px;">`+legend+sorted.map(([k,v])=>
+      `<div data-k="${esc(k)}" onclick="openTagHist(this.dataset.k)" style="margin-bottom:10px;cursor:pointer;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+          <span style="font-size:12px;">${esc(v.label)}</span>
+          <span style="font-size:12px;font-weight:700;">${fmt(v.amt)} <span style="color:var(--muted);font-weight:400;">›</span></span>
         </div>
-        <div id="ct_${id}" style="display:none;margin-top:4px;">${tagRows}</div>
-      </div>`;
-    }).join('')+`</div>`;
+        <div class="prog-bar"><div class="prog-fill" style="width:${Math.round(v.amt/maxAmt*100)}%;background:${TYPE_COL[natureOf(k,v.cat)||'none']}"></div></div>
+      </div>`).join('')+`</div>`:'');
   }
 
   renderCal();
@@ -1313,11 +1301,6 @@ function updateAmtUI(){
 }
 
 // All-time usage counts — order settles into the user's habits and stays put
-function catsByUsage(){
-  const n={};
-  S.txs.forEach(t=>{if(t.type==='expense')n[t.cat]=(n[t.cat]||0)+1;});
-  return [...allCats()].sort((a,b)=>(n[b.id]||0)-(n[a.id]||0));
-}
 function incByUsage(){
   const n={};
   S.txs.forEach(t=>{if(t.type==='income')n[t.cat]=(n[t.cat]||0)+1;});
@@ -1341,6 +1324,8 @@ function catNature(id){
 }
 function natureOf(note,cat){
   const key=(note||'').trim().toLowerCase();
+  const own=S.tagNature&&S.tagNature[key];
+  if(own) return own==='none'?null:own; // set when the tag was first typed, or in Settings
   if(cat==='food') return foodIsHome(key)?'mean':'ind';
   return catNature(cat);
 }
@@ -1533,31 +1518,31 @@ function renderAdd(){
   updateNewTagPicker();
 }
 
-// Smart nature-connect — a brand-new tag gets a one-tap category picker right here, no Settings trip
+// A brand-new tag gets its type picked right here — one tap, no Settings trip
+const TYPE_LBL={mean:'Essential',ind:'Non-essential',inv:'Invest',none:"Don't count"};
+const TYPE_COL={mean:'var(--accent)',ind:'var(--red)',inv:'var(--green)',none:'var(--muted)'};
 function updateNewTagPicker(){
   const wrap=document.getElementById('newTagCatPicker'); if(!wrap) return;
   if(curType!=='expense'){ wrap.style.display='none'; return; }
   const key=(document.getElementById('noteInp').value||'').trim().toLowerCase();
-  if(!key||!tagNeedsCat(key)){ wrap.style.display='none'; return; }
+  if(!key||!tagNeedsType(key)){ wrap.style.display='none'; return; }
   wrap.style.display='block';
-  document.getElementById('newTagCatSel').innerHTML=allCats().filter(c=>c.id!=='other').map(c=>`<div class="chip" onclick="assignNoteCat('${c.id}')">${c.label}</div>`).join('');
+  document.getElementById('newTagCatSel').innerHTML=Object.keys(TYPE_LBL).map(n=>`<div class="chip" onclick="assignNoteType('${n}')">${TYPE_LBL[n]}</div>`).join('');
 }
-// A tag with no real category would be filed as Other — which the Wealth meter can't count
-function tagNeedsCat(key){
-  const m=S.tagMap&&S.tagMap[key];
-  if(m) return m==='other'||!allCats().some(c=>c.id===m);
-  const votes={};
-  S.txs.forEach(t=>{if(t.type==='expense'&&t.cat&&t.cat!=='other'&&(t.note||'').trim().toLowerCase()===key)votes[t.cat]=(votes[t.cat]||0)+1;});
-  return !Object.keys(votes).length&&!guessCatFromNote(key);
+// Only a tag never seen before needs asking — known tags keep the type their history gave them
+function tagNeedsType(key){
+  if(S.tagNature&&S.tagNature[key]) return false;
+  if(S.tagMap&&S.tagMap[key]!==undefined) return false;
+  if(S.txs.some(t=>t.type==='expense'&&(t.note||'').trim().toLowerCase()===key)) return false;
+  return !guessCatFromNote(key);
 }
-function assignNoteCat(catId){
-  const key=(document.getElementById('noteInp').value||'').trim().toLowerCase(); if(!key) return;
-  if(!S.tagMap)S.tagMap={};
-  S.tagMap[key]=catId;
-  S.txs.forEach(t=>{ if(t.type==='expense'&&t.cat==='other'&&(t.note||'').trim().toLowerCase()===key) t.cat=catId; });
+function assignNoteType(n){
+  const key=(document.getElementById('noteInp').value||'').trim().toLowerCase(); if(!key||!TYPE_LBL[n]) return;
+  if(!S.tagNature)S.tagNature={};
+  S.tagNature[key]=n;
   save();
   document.getElementById('newTagCatPicker').style.display='none';
-  toast('Filed as '+catInfo(catId).label);
+  toast(TYPE_LBL[n]);
 }
 
 function setType(t){ curType=t; selFund='own'; if(smartNote){document.getElementById('noteInp').value='';smartNote=false;} const h=document.getElementById('smartHint'); if(h)h.style.display='none'; renderAdd(); smartRepeat(); }
@@ -1627,7 +1612,7 @@ function submitTx(){
   if(curType==='expense'){ // every spend needs a tag with a real category, or the meters can't see it
     const key=document.getElementById('noteInp').value.trim().toLowerCase();
     if(!key){ toast('Type a tag first — e.g. petrol, rent'); document.getElementById('noteInp').focus(); return; }
-    if(tagNeedsCat(key)){ updateNewTagPicker(); toast('Pick a category for this tag first'); return; }
+    if(tagNeedsType(key)){ updateNewTagPicker(); toast('Pick a type for this new tag first'); return; }
   }
   // Spent + Repayment: the source question is unskippable — asked at the moment of saving
   const isRep=curType==='repayment';
@@ -1805,7 +1790,7 @@ function histFilteredTxs(){
   let txs=(histFilter==='all'?base
     :histFilter==='income'?base.filter(t=>t.type==='income')
     :histFilter==='repay'?base.filter(t=>t.type==='repayment')
-    :base.filter(t=>t.type==='expense'&&t.cat===histFilter));
+    :base.filter(t=>t.type==='expense'&&'t:'+(t.note||'').trim().toLowerCase()===histFilter));
   if(histDay) txs=txs.filter(t=>t.date===histDay);
   return txs;
 }
@@ -1841,6 +1826,7 @@ function downloadPDF(){
   w.document.write(html); w.document.close();
 }
 function setHistFilter(f){ histFilter=f; renderHist(); }
+function openTagHist(key){ histFilter='t:'+key; histRange=null; histDay=null; go('hist'); }
 function openHistDate(){
   if(histDay){ histDay=null; renderHist(); return; } // active day chip = tap to clear
   const d=document.getElementById('histDateInp');
@@ -1895,18 +1881,19 @@ function renderCalRow(){
 }
 function renderHist(){
   const all=histRange?S.txs.filter(t=>t.date>=histRange.from&&t.date<=histRange.to):monthTxs();
-  // filter chips — All / Received / Repaid / categories seen in scope
-  const catsHere=[...new Set(all.filter(t=>t.type==='expense').map(t=>t.cat))];
-  const chips=[['all','All'],['income','Received'],['repay','Repaid'],...catsByUsage().filter(c=>catsHere.includes(c.id)).map(c=>[c.id,c.label])];
+  // filter chips — All / Received / Repaid / tags seen in scope, most spent first
+  const tagSum={};
+  all.forEach(t=>{ if(t.type!=='expense') return; const k=(t.note||'').trim().toLowerCase(); if(!k) return; if(!tagSum[k]) tagSum[k]={label:t.note.trim(),amt:0}; tagSum[k].amt+=t.amount; });
+  const chips=[['all','All'],['income','Received'],['repay','Repaid'],...Object.entries(tagSum).sort((a,b)=>b[1].amt-a[1].amt).map(([k,v])=>['t:'+k,v.label])];
   if(!chips.some(([id])=>id===histFilter)) histFilter='all';
   document.getElementById('histFilters').innerHTML=
-    chips.map(([id,lbl])=>`<div class="chip${histFilter===id?' active':''}" onclick="setHistFilter('${id}')">${lbl}</div>`).join('');
+    chips.map(([id,lbl])=>`<div class="chip${histFilter===id?' active':''}" data-f="${esc(id)}" onclick="setHistFilter(this.dataset.f)">${esc(lbl)}</div>`).join('');
   renderCalRow();
   // apply filters — range, day and category combine
   let txs=(histFilter==='all'?all
     :histFilter==='income'?all.filter(t=>t.type==='income')
     :histFilter==='repay'?all.filter(t=>t.type==='repayment')
-    :all.filter(t=>t.type==='expense'&&t.cat===histFilter)
+    :all.filter(t=>t.type==='expense'&&'t:'+(t.note||'').trim().toLowerCase()===histFilter)
   );
   if(histDay) txs=txs.filter(t=>t.date===histDay);
   txs=txs.sort((a,b)=>b.date.localeCompare(a.date));
@@ -1933,7 +1920,7 @@ function renderHist(){
   }
   else if((histFilter==='all'&&!histDay)||!txs.length){ hs.innerHTML=''; }
   else{
-    const name=histFilter==='all'?'Everything':histFilter==='income'?'Received':histFilter==='repay'?'Repaid':catInfo(histFilter).label;
+    const name=histFilter==='all'?'Everything':histFilter==='income'?'Received':histFilter==='repay'?'Repaid':esc((chips.find(([id])=>id===histFilter)||['',''])[1]);
     const col=histFilter==='income'?'var(--green)':histFilter==='repay'?'var(--purple)':histFilter==='all'?'var(--text)':'var(--red)';
     const when=histDay?('on '+new Date(histDay+'T00:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short'})):'this month';
     hs.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:11px 14px;margin-bottom:12px;">
@@ -2080,32 +2067,12 @@ function loansCardHTML(){
 }
 
 // SETTINGS
-const NATURE_LBL={ind:'Non-essential',mean:'Essential',inv:'Invest'};
-const NATURE_COL={ind:['var(--red-soft)','var(--red-line)','var(--red)'],mean:['var(--accent-soft)','var(--accent)','var(--accent)'],inv:['var(--green-soft)','var(--green-line)','var(--green)']};
-const CC_COLORS=['#F97362','#4FC3F7','#BA68C8','#FFD54F','#81C784','#FF8A65','#64B5F6'];
-// Built-in or custom — every category's nature is the user's call
-function setCatNature(id,nat){
-  const c=(S.customCats||[]).find(x=>x.id===id);
-  if(c) c.nature=nat; else { if(!S.catNature)S.catNature={}; S.catNature[id]=nat; }
-  save(); renderSettings(); toast(catInfo(id).label+' → '+NATURE_LBL[nat]);
-}
-function addCategory(){
-  const name=(document.getElementById('ncName').value||'').trim();
-  const nat=document.getElementById('ncNature').value;
-  if(!name){ toast('Give the category a name'); return; }
-  if(!NATURE_LBL[nat]){ toast('Pick Essential, Non-essential or Invest'); return; }
-  const id='c_'+name.toLowerCase().replace(/[^a-z0-9]+/g,'');
-  if(id==='c_'||[...allCats(),...INC_CATS].some(c=>c.id===id||c.label.toLowerCase()===name.toLowerCase())){ toast('That category already exists'); return; }
-  if(!S.customCats)S.customCats=[];
-  S.customCats.push({id,label:name,color:CC_COLORS[S.customCats.length%CC_COLORS.length],nature:nat});
-  save(); renderSettings(); toast(name+' added — '+NATURE_LBL[nat]);
-}
-function removeCustomCat(id){
-  const c=(S.customCats||[]).find(x=>x.id===id); if(!c) return;
-  S.txs.forEach(t=>{if(t.type==='expense'&&t.cat===id)t.cat='other';});
-  Object.keys(S.tagMap||{}).forEach(k=>{if(S.tagMap[k]===id)S.tagMap[k]='other';});
-  S.customCats=S.customCats.filter(x=>x.id!==id);
-  save(); renderSettings(); toast(c.label+' removed — its tags need a new category');
+// Tags only — each tag carries its own type, so there are no categories to manage
+function setTagType(i,n){
+  const t=_setTags[i]; if(!t||!TYPE_LBL[n]) return;
+  if(!S.tagNature) S.tagNature={};
+  S.tagNature[t.key]=n;
+  save(); renderSettings(); toast(t.label+' → '+TYPE_LBL[n]);
 }
 function renameTag(i){
   const t=_setTags[i]; if(!t) return;
@@ -2114,43 +2081,35 @@ function renameTag(i){
   const nk=nv.toLowerCase();
   S.txs.forEach(tx=>{ if((tx.note||'').trim().toLowerCase()===t.key) tx.note=nv; });
   if(S.tagMap&&S.tagMap[t.key]!==undefined){ S.tagMap[nk]=S.tagMap[t.key]; delete S.tagMap[t.key]; }
+  if(S.tagNature&&S.tagNature[t.key]!==undefined){ S.tagNature[nk]=S.tagNature[t.key]; delete S.tagNature[t.key]; }
   if(S.foodMode&&S.foodMode[t.key]!==undefined){ S.foodMode[nk]=S.foodMode[t.key]; delete S.foodMode[t.key]; }
   S.manualTags=(S.manualTags||[]).map(m=>m.key===t.key?{key:nk,label:nv}:m);
   S.hiddenTags=(S.hiddenTags||[]).map(k=>k===t.key?nk:k);
   save(); renderSettings(); toast('Renamed to '+nv);
 }
-// Typos become one tag — every entry moves over and takes the target's category
+// Typos become one tag — every entry moves over and takes the target's type
 function mergeTag(i,j){
   const t=_setTags[i], to=_setTags[+j];
   if(j===''||!t||!to||t.key===to.key) return;
   const n=S.txs.filter(x=>x.type==='expense'&&(x.note||'').trim().toLowerCase()===t.key).length;
-  const ok=id=>id!=='other'&&allCats().some(c=>c.id===id);
-  const cat=ok(to.cat)?to.cat:t.cat;
-  if(!confirm(`Merge "${t.label}" into "${to.label}"?\n\n${n} entr${n===1?'y':'ies'} will be renamed "${to.label}" and filed under ${catInfo(cat).label}.`)){ renderSettings(); return; }
-  S.txs.forEach(x=>{
-    if(x.type!=='expense') return;
-    const k=(x.note||'').trim().toLowerCase();
-    if(k===t.key){ x.note=to.label; x.cat=cat; } else if(k===to.key) x.cat=cat;
-  });
-  if(!S.tagMap)S.tagMap={};
-  S.tagMap[to.key]=cat; delete S.tagMap[t.key];
-  if(S.foodMode&&S.foodMode[t.key]!==undefined){ if(S.foodMode[to.key]===undefined) S.foodMode[to.key]=S.foodMode[t.key]; delete S.foodMode[t.key]; }
+  if(!confirm(`Merge "${t.label}" into "${to.label}"?\n\n${n} entr${n===1?'y':'ies'} will be renamed "${to.label}" (${TYPE_LBL[to.type]}).`)){ renderSettings(); return; }
+  S.txs.forEach(x=>{ if(x.type==='expense'&&(x.note||'').trim().toLowerCase()===t.key){ x.note=to.label; x.cat=to.cat; } });
+  if(!S.tagNature)S.tagNature={};
+  S.tagNature[to.key]=to.type; delete S.tagNature[t.key];
+  if(S.tagMap) delete S.tagMap[t.key];
+  if(S.foodMode) delete S.foodMode[t.key];
   S.manualTags=(S.manualTags||[]).filter(m=>m.key!==t.key);
   S.hiddenTags=(S.hiddenTags||[]).filter(k=>k!==t.key);
   save(); renderSettings(); toast(`${t.label} merged into ${to.label}`);
 }
-function renameCustomCat(id){
-  const c=(S.customCats||[]).find(x=>x.id===id); if(!c) return;
-  const nv=(prompt('Rename category',c.label)||'').trim();
-  if(!nv) return;
-  c.label=nv; save(); renderSettings(); toast('Renamed to '+nv);
-}
 function addManualTag(){
   const name=(document.getElementById('mtName').value||'').trim();
+  const n=document.getElementById('mtType').value;
   if(!name){toast('Give the tag a name');return;}
+  if(!TYPE_LBL[n]){toast('Pick a type for the tag');return;}
   const key=name.toLowerCase();
-  if(!S.tagMap)S.tagMap={};
-  S.tagMap[key]=document.getElementById('mtCat').value;
+  if(!S.tagNature)S.tagNature={};
+  S.tagNature[key]=n;
   if(!S.manualTags)S.manualTags=[];
   if(!S.manualTags.some(t=>t.key===key)) S.manualTags.push({key,label:name});
   S.hiddenTags=(S.hiddenTags||[]).filter(k=>k!==key);
@@ -2168,23 +2127,6 @@ function unhideTag(i){
   S.hiddenTags=(S.hiddenTags||[]).filter(k=>k!==t.key);
   save(); renderSettings(); toast(t.label+' back on the Add screen');
 }
-function setTagCat(i,catId){
-  const t=_setTags[i]; if(!t||!catId) return;
-  if(!S.tagMap) S.tagMap={};
-  S.tagMap[t.key]=catId;
-  // re-file every existing entry carrying this tag — analytics stay truthful
-  let moved=0;
-  S.txs.forEach(tx=>{ if(tx.type==='expense'&&(tx.note||'').trim().toLowerCase()===t.key&&tx.cat!==catId){tx.cat=catId;moved++;} });
-  save(); renderSettings();
-  toast(`${t.label} → ${catInfo(catId).label}${moved?' · '+moved+' entr'+(moved===1?'y':'ies')+' moved':''}`);
-}
-function toggleFoodMode(i){
-  const t=_setTags[i]; if(!t) return;
-  if(!S.foodMode) S.foodMode={};
-  S.foodMode[t.key]=foodIsHome(t.key)?'out':'home';
-  save(); renderSettings();
-  toast(t.label+' → '+(foodIsHome(t.key)?'Home food':'Outside food'));
-}
 // Every tag ever typed — no cap, nothing filtered out — so all of them can be managed here
 function allTags(){
   const m={};
@@ -2198,46 +2140,18 @@ function allTags(){
   const hid=new Set((S.hiddenTags||[]).map(s=>s.toLowerCase()));
   return Object.entries(m).map(([key,v])=>{
     const top=(Object.entries(v.cats).sort((a,b)=>b[1]-a[1])[0]||['other'])[0];
-    return {key,label:v.label,n:v.n,amt:v.amt,cat:(S.tagMap&&S.tagMap[key])||top,hidden:hid.has(key)};
+    const cat=(S.tagMap&&S.tagMap[key])||top;
+    return {key,label:v.label,n:v.n,amt:v.amt,cat,type:natureOf(key,cat)||'none',hidden:hid.has(key)};
   }).sort((a,b)=>b.n-a.n);
 }
 function renderSettings(){
   document.getElementById('st_target').value=getTarget()||'';
   document.getElementById('loansMount').innerHTML=loansCardHTML();
-  const cats=allCats().filter(c=>c.id!=='other');
-  const isCustom=id=>(S.customCats||[]).some(c=>c.id===id);
-  const selStyle='min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:600;padding:8px 6px;';
-  const natBtns=(id,cur)=>['mean','ind','inv'].map(n=>`<button onclick="setCatNature('${id}','${n}')" style="flex:1;font-size:11px;font-weight:700;padding:7px 2px;border-radius:7px;cursor:pointer;${cur===n?`color:${NATURE_COL[n][2]};background:${NATURE_COL[n][0]};border:1px solid ${NATURE_COL[n][1]};`:'color:var(--muted);background:none;border:1px solid var(--border);'}">${NATURE_LBL[n]}</button>`).join('');
-  document.getElementById('catsMount').innerHTML=`<div class="card">
-    <div class="sec">Categories</div>
-    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px;">Each category is Essential, Non-essential or Invest — that is what the Wealth meter counts. Tap to change it.</div>
-    ${cats.map(c=>`<div style="margin-bottom:12px;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-        <span style="width:10px;height:10px;border-radius:50%;background:${c.color};flex-shrink:0;"></span>
-        <span ${isCustom(c.id)?`onclick="renameCustomCat('${c.id}')" `:''}style="flex:1;min-width:0;font-size:13px;font-weight:700;${isCustom(c.id)?'cursor:pointer;border-bottom:1px dashed var(--border);':''}">${esc(c.label)}</span>
-        ${isCustom(c.id)?`<button onclick="if(confirm('Remove the ${esc(c.label).replace(/'/g,'')} category? Its tags will need a new category.'))removeCustomCat('${c.id}')" aria-label="Remove category" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:4px 6px;">✕</button>`:''}
-      </div>
-      ${c.id==='food'
-        ?`<div style="font-size:11px;color:var(--muted);line-height:1.5;">Home food = Essential · Outside food = Non-essential — set per tag below</div>`
-        :`<div style="display:flex;gap:5px;">${natBtns(c.id,catNature(c.id))}</div>`}
-    </div>`).join('')}
-    <div style="border-top:1px solid var(--border);padding-top:10px;">
-      <div class="set-label" style="margin-top:0;">Add a category</div>
-      <div style="display:flex;gap:8px;">
-        <input class="note-inp" id="ncName" placeholder="Name — e.g. Kids, Rent" style="flex:1.3;margin-bottom:0;min-width:0;">
-        <select id="ncNature" style="flex:1;${selStyle}">
-          <option value="">Type…</option><option value="mean">Essential</option><option value="ind">Non-essential</option><option value="inv">Invest</option>
-        </select>
-      </div>
-      <button class="big-save" style="margin-top:8px;margin-bottom:0;" onclick="addCategory()">+ Add Category</button>
-    </div>
-  </div>`;
-
   const expT=allTags();
   const repT=repayTags().filter(rt=>!expT.some(et=>et.key===rt.key)).map(t=>({...t,kind:'rep'}));
   _setTags=[...expT,...repT];
-  const known=new Set(cats.map(c=>c.id));
-  const catOpts=cur=>(known.has(cur)?'':'<option value="" selected>Pick category…</option>')+cats.map(c=>`<option value="${c.id}"${cur===c.id?' selected':''}>${esc(c.label)}</option>`).join('');
+  const selStyle='min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:600;padding:8px 6px;';
+  const typeOpts=cur=>Object.keys(TYPE_LBL).map(n=>`<option value="${n}"${cur===n?' selected':''}>${TYPE_LBL[n]}</option>`).join('');
   const mergeOpts=i=>'<option value="">Merge into…</option>'+expT.map((x,j)=>j===i?'':`<option value="${j}">${esc(x.label)}</option>`).join('');
   const row=i=>{
     const t=_setTags[i];
@@ -2250,31 +2164,24 @@ function renderSettings(){
           :`<button onclick="removeTag(${i})" aria-label="Hide from Add screen" title="Hide from Add screen" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:2px 4px;">✕</button>`}
       </div>
       <div style="display:flex;gap:6px;">
-        <select onchange="setTagCat(${i},this.value)" aria-label="Category" style="flex:1.2;${selStyle}">${catOpts(t.cat)}</select>
-        ${t.cat==='food'?`<button onclick="toggleFoodMode(${i})" style="flex-shrink:0;background:${foodIsHome(t.key)?'var(--green-soft)':'var(--yellow-soft)'};border:1px solid ${foodIsHome(t.key)?'var(--green-line)':'var(--yellow-line)'};border-radius:8px;color:${foodIsHome(t.key)?'var(--green)':'var(--yellow)'};font-size:11px;font-weight:700;padding:0 8px;cursor:pointer;">${foodIsHome(t.key)?'Home':'Outside'}</button>`:''}
+        <select onchange="setTagType(${i},this.value)" aria-label="Type" style="flex:1;${selStyle}color:${TYPE_COL[t.type]};">${typeOpts(t.type)}</select>
         <select onchange="mergeTag(${i},this.value)" aria-label="Merge into another tag" style="flex:1;${selStyle}">${mergeOpts(i)}</select>
       </div>
     </div>`;
   };
   const idx=expT.map((_,i)=>i);
-  const needs=idx.filter(i=>!known.has(expT[i].cat));
-  const group=nat=>idx.filter(i=>known.has(expT[i].cat)&&natureOf(expT[i].key,expT[i].cat)===nat);
-  const head=(txt,col,n)=>`<div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:${col};margin:14px 0 7px;">${txt} · ${n}</div>`;
+  const group=n=>idx.filter(i=>expT[i].type===n);
+  const head=(n,cnt,sub)=>`<div style="margin:14px 0 7px;"><div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:${TYPE_COL[n]};">${TYPE_LBL[n]} · ${cnt}</div>${sub?`<div style="font-size:10px;color:var(--muted);margin-top:2px;">${sub}</div>`:''}</div>`;
+  const SUB={mean:'Needed spending — never judged',ind:'Optional spending — what repayments and investing should beat',inv:'Money that grows',none:'Left out of the Wealth meter — bank charges and the like'};
   const blank=S.txs.filter(t=>t.type==='expense'&&!(t.note||'').trim());
   const blankAmt=blank.reduce((a,t)=>a+t.amount,0);
-  const attention=(needs.length||blank.length)?`<div style="background:var(--yellow-soft);border:1px solid var(--yellow-line);border-radius:10px;padding:10px 12px;margin-bottom:4px;">
-      <div style="font-size:12px;font-weight:700;color:var(--yellow);margin-bottom:${needs.length?'8px':'0'};">Not counted by the Wealth meter${needs.length?' — pick a category for these':''}${blank.length?`${needs.length?'. Also':' —'} ${blank.length} spend${blank.length===1?' has':'s have'} no tag (${fmt(blankAmt)}): open History, tap each one and give it a tag`:''}</div>
-      ${needs.map(row).join('')}
-    </div>`:'';
-  const mean=group('mean'), ind=group('ind'), inv=group('inv');
+  const blankNote=blank.length?`<div style="background:var(--yellow-soft);border:1px solid var(--yellow-line);border-radius:10px;padding:10px 12px;font-size:12px;font-weight:700;color:var(--yellow);">${blank.length} spend${blank.length===1?' has':'s have'} no tag (${fmt(blankAmt)}) — open History, tap each one and give it a tag</div>`:'';
   document.getElementById('tagsMount').innerHTML=`<div class="card">
     <div class="sec">Tags</div>
-    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;">Type any tag you like when logging. Here each tag gets one category. Tap a name to rename it · pick its category in the first box · fix a typo with "Merge into…" · ✕ hides it from the Add screen.</div>
-    ${attention}
-    ${mean.length?head('Essential','var(--accent)',mean.length)+mean.map(row).join(''):''}
-    ${ind.length?head('Non-essential','var(--red)',ind.length)+ind.map(row).join(''):''}
-    ${inv.length?head('Invest','var(--green)',inv.length)+inv.map(row).join(''):''}
-    ${repT.length?head('Debt repayment names','var(--purple)',repT.length)+repT.map((t,k)=>{const i=expT.length+k;return `<div style="display:flex;align-items:center;gap:8px;background:var(--card2);border-radius:9px;padding:9px 10px;margin-bottom:6px;">
+    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;">Type any tag you like when logging — petrol, milk, rent. Each tag has one type, which is all the Wealth meter needs. Tap a name to rename it · change its type in the first box · fix a typo with "Merge into…" · ✕ hides it from the Add screen.</div>
+    ${blankNote}
+    ${['mean','ind','inv','none'].map(n=>{const g=group(n);return g.length?head(n,g.length,SUB[n])+g.map(row).join(''):'';}).join('')}
+    ${repT.length?`<div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:var(--purple);margin:14px 0 7px;">Debt repayment names · ${repT.length}</div>`+repT.map((t,k)=>{const i=expT.length+k;return `<div style="display:flex;align-items:center;gap:8px;background:var(--card2);border-radius:9px;padding:9px 10px;margin-bottom:6px;">
       <span onclick="renameTag(${i})" style="flex:1;min-width:0;font-size:13px;font-weight:700;cursor:pointer;border-bottom:1px dashed var(--border);">${esc(t.label)}</span>
       <button onclick="removeTag(${i})" aria-label="Hide from Add screen" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:2px 4px;">✕</button>
     </div>`;}).join(''):''}
@@ -2282,7 +2189,7 @@ function renderSettings(){
       <div class="set-label" style="margin-top:0;">Add a tag</div>
       <div style="display:flex;gap:8px;">
         <input class="note-inp" id="mtName" placeholder="Tag — e.g. School fee" style="flex:1.3;margin-bottom:0;min-width:0;">
-        <select id="mtCat" style="flex:1;${selStyle}">${cats.map(c=>`<option value="${c.id}">${esc(c.label)}</option>`).join('')}</select>
+        <select id="mtType" style="flex:1;${selStyle}"><option value="">Type…</option>${typeOpts('')}</select>
       </div>
       <button class="big-save" style="margin-top:8px;margin-bottom:0;" onclick="addManualTag()">+ Add Tag</button>
     </div>
