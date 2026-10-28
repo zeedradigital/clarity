@@ -152,6 +152,7 @@ body.adding .fab-circle{display:none;}
 .chip.active .chip-amt{color:var(--accent);}
 .tag-chip{border-style:dashed;}
 .tag-chip.active{border-style:solid;}
+.tag-chip{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
 .date-chip{background:var(--card);border-style:solid;color:var(--text);font-weight:700;}
 #view-add .numpad{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(72px + env(safe-area-inset-bottom));width:100%;max-width:430px;margin-bottom:0;padding:6px 4px 6px;background:var(--bg);border-top:1px solid var(--border);z-index:80;}
 
@@ -539,6 +540,15 @@ body.adding .fab-circle{display:none;}
   </div>
 </div>
 
+<!-- TAG SHEET — long-press a tag button: set its type, rename or merge -->
+<div class="sheet-overlay" id="tagSheet" onclick="if(event.target===this)closeTagSheet()">
+  <div class="sheet">
+    <div class="sheet-title" id="tagSheetTitle"></div>
+    <div id="tagSheetBody"></div>
+    <button class="sheet-cancel" onclick="closeTagSheet()">Done</button>
+  </div>
+</div>
+
 <!-- CONFIRM FLASH -->
 <div class="confirm-pop" id="confirmPop" aria-hidden="true">
   <div class="confirm-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.5 5.5L20 7"/></svg></div>
@@ -647,7 +657,8 @@ async function pushRemote(){
 function mergeState(local,remote){
   const byId={};
   (remote.txs||[]).forEach(t=>{byId[t.id]=t;});
-  (local.txs||[]).forEach(t=>{byId[t.id]=t;});
+  // same entry on both devices: the later edit wins (unedited ones: this device, as before)
+  (local.txs||[]).forEach(t=>{const r=byId[t.id]; if(!r||(t._m||0)>=(r._m||0)) byId[t.id]=t;});
   // deletions from either device win — a stale copy elsewhere can't resurrect them
   const deletedIds=[...new Set([...(remote.deletedIds||[]),...(local.deletedIds||[])])];
   const gone=new Set(deletedIds);
@@ -1358,8 +1369,8 @@ function duelFor(y,m0){
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 let _tags=[];
 function noteTags(){
-  // only built-in labels are auto-note junk; a custom category may share its tag's name
-  const catLabels=new Set([...CATS,...INC_CATS].map(c=>c.label.toLowerCase()));
+  // vague words (essential, personal…) aren't real tags — everything else, food included, is
+  const catLabels=new Set(VAGUE_TAGS);
   const hid=new Set((S.hiddenTags||[]).map(s=>s.toLowerCase()));
   const m={};
   S.txs.forEach(t=>{
@@ -1375,6 +1386,7 @@ function noteTags(){
     .sort((a,b)=>b.n-a.n).slice(0,8);
 }
 function useTag(i){
+  if(_lpFired){ _lpFired=false; return; } // a long-press opened the tag sheet instead
   const t=_tags[i]; if(!t) return;
   document.getElementById('noteInp').value=t.label;
   smartNote=false;
@@ -1488,7 +1500,7 @@ function renderAdd(){
     S.txs.forEach(t=>{const d=new Date(t.date);if(t.type==='expense'&&d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()){const k=(t.note||'').trim().toLowerCase();if(k)sp[k]=(sp[k]||0)+t.amount;}});
     _tags=noteTags();
     const noteNow=document.getElementById('noteInp').value.trim().toLowerCase();
-    document.getElementById('catSel').innerHTML=_tags.map((t,i)=>`<div class="chip tag-chip${noteNow===t.key?' active':''}" onclick="useTag(${i})">${esc(t.label)}${sp[t.key]?`<span class="chip-amt">${shortAmt(sp[t.key])}</span>`:''}</div>`).join('');
+    document.getElementById('catSel').innerHTML=_tags.map((t,i)=>`<div class="chip tag-chip${noteNow===t.key?' active':''}" data-k="${esc(t.key)}" onpointerdown="lpStart(this.dataset.k)" onpointerup="lpEnd()" onpointerleave="lpEnd()" onpointercancel="lpEnd()" oncontextmenu="return false" onclick="useTag(${i})">${esc(t.label)}${sp[t.key]?`<span class="chip-amt">${shortAmt(sp[t.key])}</span>`:''}</div>`).join('');
   }
 
   if(curType==='repayment'){
@@ -1612,6 +1624,7 @@ function submitTx(){
   if(curType==='expense'){ // every spend needs a tag with a real category, or the meters can't see it
     const key=document.getElementById('noteInp').value.trim().toLowerCase();
     if(!key){ toast('Type a tag first — e.g. petrol, rent'); document.getElementById('noteInp').focus(); return; }
+    if(vagueTag(key)) return;
     if(tagNeedsType(key)){ updateNewTagPicker(); toast('Pick a type for this new tag first'); return; }
   }
   // Spent + Repayment: the source question is unskippable — asked at the moment of saving
@@ -1731,7 +1744,7 @@ function finalizeTx(fund){
   }
 
   if(old){
-    tx.id=old.id;
+    tx.id=old.id; tx._m=Date.now(); // newest edit wins when devices sync
     S.txs[S.txs.indexOf(old)]=tx;
     if(old.type==='repayment'||curType==='repayment'){ applyLoans(); if(S.loans&&S.loans.length) logDebtSnapshot(S.settings.totalDebt); }
   } else {
@@ -2068,46 +2081,68 @@ function loansCardHTML(){
 
 // SETTINGS
 // Tags only — each tag carries its own type, so there are no categories to manage
-function setTagType(i,n){
-  const t=_setTags[i]; if(!t||!TYPE_LBL[n]) return;
-  if(!S.tagNature) S.tagNature={};
-  S.tagNature[t.key]=n;
-  save(); renderSettings(); toast(t.label+' → '+TYPE_LBL[n]);
+// Words that name a type or an old bucket — as a tag they say nothing about where the money went
+const VAGUE_TAGS=['essential','essentials','non-essential','non essential','nonessential','invest','investment','investments',"don't count",'dont count','other','others','misc','personal','family','business','expense','expenses'];
+function vagueTag(key){
+  if(!VAGUE_TAGS.includes(key)) return false;
+  toast(`"${key}" is too general — type what it was, e.g. milk, rent`);
+  return true;
 }
-function renameTag(i){
-  const t=_setTags[i]; if(!t) return;
+// After any tag change: save, and redraw whichever screen shows tags
+function tagsChanged(msg){
+  save(); renderSettings(); renderAdd();
+  if(_sheetTag) openTagSheet(_sheetTag);
+  if(msg) toast(msg);
+}
+function setTagTypeKey(key,n){
+  if(!key||!TYPE_LBL[n]) return;
+  if(!S.tagNature) S.tagNature={};
+  S.tagNature[key]=n;
+  const t=allTags().find(x=>x.key===key);
+  tagsChanged((t?t.label:key)+' → '+TYPE_LBL[n]);
+}
+function setTagType(i,n){ const t=_setTags[i]; if(t) setTagTypeKey(t.key,n); }
+function renameTagKey(key){
+  const t=_setTags.find(x=>x.key===key)||allTags().find(x=>x.key===key); if(!t) return;
   const nv=(prompt('Rename tag',t.label)||'').trim();
   if(!nv||nv.toLowerCase()===t.key) return;
   const nk=nv.toLowerCase();
-  S.txs.forEach(tx=>{ if((tx.note||'').trim().toLowerCase()===t.key) tx.note=nv; });
+  if(vagueTag(nk)) return;
+  S.txs.forEach(tx=>{ if((tx.note||'').trim().toLowerCase()===t.key){ tx.note=nv; tx._m=Date.now(); } });
   if(S.tagMap&&S.tagMap[t.key]!==undefined){ S.tagMap[nk]=S.tagMap[t.key]; delete S.tagMap[t.key]; }
   if(S.tagNature&&S.tagNature[t.key]!==undefined){ S.tagNature[nk]=S.tagNature[t.key]; delete S.tagNature[t.key]; }
   if(S.foodMode&&S.foodMode[t.key]!==undefined){ S.foodMode[nk]=S.foodMode[t.key]; delete S.foodMode[t.key]; }
   S.manualTags=(S.manualTags||[]).map(m=>m.key===t.key?{key:nk,label:nv}:m);
   S.hiddenTags=(S.hiddenTags||[]).map(k=>k===t.key?nk:k);
-  save(); renderSettings(); toast('Renamed to '+nv);
+  if(_sheetTag===t.key) _sheetTag=nk;
+  tagsChanged('Renamed to '+nv);
 }
+function renameTag(i){ const t=_setTags[i]; if(t) renameTagKey(t.key); }
 // Typos become one tag — every entry moves over and takes the target's type
-function mergeTag(i,j){
-  const t=_setTags[i], to=_setTags[+j];
-  if(j===''||!t||!to||t.key===to.key) return;
+function mergeTagKey(key,toKey){
+  const tags=allTags();
+  const t=tags.find(x=>x.key===key), to=tags.find(x=>x.key===toKey);
+  if(!t||!to||t.key===to.key) return;
   const n=S.txs.filter(x=>x.type==='expense'&&(x.note||'').trim().toLowerCase()===t.key).length;
-  if(!confirm(`Merge "${t.label}" into "${to.label}"?\n\n${n} entr${n===1?'y':'ies'} will be renamed "${to.label}" (${TYPE_LBL[to.type]}).`)){ renderSettings(); return; }
-  S.txs.forEach(x=>{ if(x.type==='expense'&&(x.note||'').trim().toLowerCase()===t.key){ x.note=to.label; x.cat=to.cat; } });
+  if(!confirm(`Merge "${t.label}" into "${to.label}"?\n\n${n} entr${n===1?'y':'ies'} will be renamed "${to.label}" (${TYPE_LBL[to.type]}).`)){ tagsChanged(); return; }
+  S.txs.forEach(x=>{ if(x.type==='expense'&&(x.note||'').trim().toLowerCase()===t.key){ x.note=to.label; x.cat=to.cat; x._m=Date.now(); } });
   if(!S.tagNature)S.tagNature={};
   S.tagNature[to.key]=to.type; delete S.tagNature[t.key];
   if(S.tagMap) delete S.tagMap[t.key];
   if(S.foodMode) delete S.foodMode[t.key];
   S.manualTags=(S.manualTags||[]).filter(m=>m.key!==t.key);
   S.hiddenTags=(S.hiddenTags||[]).filter(k=>k!==t.key);
-  save(); renderSettings(); toast(`${t.label} merged into ${to.label}`);
+  if(_sheetTag===t.key) _sheetTag=to.key;
+  tagsChanged(`${t.label} merged into ${to.label}`);
 }
+function mergeTag(i,j){ const t=_setTags[i], to=_setTags[+j]; if(j===''||!t||!to) return; mergeTagKey(t.key,to.key); }
 function addManualTag(){
   const name=(document.getElementById('mtName').value||'').trim();
   const n=document.getElementById('mtType').value;
   if(!name){toast('Give the tag a name');return;}
   if(!TYPE_LBL[n]){toast('Pick a type for the tag');return;}
   const key=name.toLowerCase();
+  if(vagueTag(key)) return;
   if(!S.tagNature)S.tagNature={};
   S.tagNature[key]=n;
   if(!S.manualTags)S.manualTags=[];
@@ -2144,6 +2179,32 @@ function allTags(){
     return {key,label:v.label,n:v.n,amt:v.amt,cat,type:natureOf(key,cat)||'none',hidden:hid.has(key)};
   }).sort((a,b)=>b.n-a.n);
 }
+// Four type buttons — one tap sets the type; the current one is lit in its colour
+function typeBtns(cur,call,big){
+  return `<div style="display:grid;grid-template-columns:repeat(${big?2:4},1fr);gap:${big?8:4}px;">${Object.keys(TYPE_LBL).map(n=>{const on=cur===n;return `<button onclick="${call}('${n}')" style="padding:${big?'13px 4px':'7px 2px'};border-radius:${big?10:7}px;font-size:${big?13:10}px;font-weight:700;cursor:pointer;border:${big?2:1}px solid ${on?TYPE_COL[n]:'var(--border)'};background:${on?'var(--bg)':'none'};color:${on?TYPE_COL[n]:'var(--muted)'};">${on?'✓ ':''}${TYPE_LBL[n]}</button>`;}).join('')}</div>`;
+}
+// Long-press a tag button on the Add screen → type, rename, merge, right there
+let _sheetTag=null, _lpTimer=null, _lpFired=false;
+function lpStart(key){
+  _lpFired=false; clearTimeout(_lpTimer);
+  _lpTimer=setTimeout(()=>{ _lpFired=true; if(navigator.vibrate)navigator.vibrate(20); openTagSheet(key); },500);
+}
+function lpEnd(){ clearTimeout(_lpTimer); }
+function openTagSheet(key){
+  const t=allTags().find(x=>x.key===key); if(!t){ closeTagSheet(); return; }
+  _sheetTag=key;
+  document.getElementById('tagSheetTitle').innerHTML=`${esc(t.label)}<div style="font-size:11px;font-weight:500;color:var(--muted);margin-top:3px;">${t.n} entr${t.n===1?'y':'ies'} · ${fmt(t.amt)}</div>`;
+  const others=allTags().filter(x=>x.key!==key);
+  document.getElementById('tagSheetBody').innerHTML=
+    typeBtns(t.type,'sheetSetType',true)+
+    `<div style="display:flex;gap:8px;margin-top:12px;">
+      <button onclick="renameTagKey(_sheetTag)" style="flex:1;padding:11px;border-radius:10px;border:1px solid var(--border);background:var(--card2);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;">Rename</button>
+      <select onchange="if(this.value!=='')mergeTagKey(_sheetTag,this.value)" aria-label="Merge into another tag" style="flex:1;min-width:0;padding:11px 6px;border-radius:10px;border:1px solid var(--border);background:var(--card2);color:var(--text);font-size:13px;font-weight:700;"><option value="">Merge into…</option>${others.map(x=>`<option value="${esc(x.key)}">${esc(x.label)}</option>`).join('')}</select>
+    </div>`;
+  document.getElementById('tagSheet').classList.add('show');
+}
+function sheetSetType(n){ setTagTypeKey(_sheetTag,n); }
+function closeTagSheet(){ _sheetTag=null; document.getElementById('tagSheet').classList.remove('show'); }
 function renderSettings(){
   document.getElementById('st_target').value=getTarget()||'';
   document.getElementById('loansMount').innerHTML=loansCardHTML();
@@ -2163,10 +2224,8 @@ function renderSettings(){
           ?`<button onclick="unhideTag(${i})" style="background:none;border:1px solid var(--border);border-radius:7px;color:var(--muted);font-size:10px;font-weight:700;padding:4px 7px;cursor:pointer;">Show</button>`
           :`<button onclick="removeTag(${i})" aria-label="Hide from Add screen" title="Hide from Add screen" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:2px 4px;">✕</button>`}
       </div>
-      <div style="display:flex;gap:6px;">
-        <select onchange="setTagType(${i},this.value)" aria-label="Type" style="flex:1;${selStyle}color:${TYPE_COL[t.type]};">${typeOpts(t.type)}</select>
-        <select onchange="mergeTag(${i},this.value)" aria-label="Merge into another tag" style="flex:1;${selStyle}">${mergeOpts(i)}</select>
-      </div>
+      ${typeBtns(t.type,`setTagType.bind(null,${i})`)}
+      <select onchange="mergeTag(${i},this.value)" aria-label="Merge into another tag" style="width:100%;margin-top:6px;${selStyle}">${mergeOpts(i)}</select>
     </div>`;
   };
   const idx=expT.map((_,i)=>i);
@@ -2178,7 +2237,7 @@ function renderSettings(){
   const blankNote=blank.length?`<div style="background:var(--yellow-soft);border:1px solid var(--yellow-line);border-radius:10px;padding:10px 12px;font-size:12px;font-weight:700;color:var(--yellow);">${blank.length} spend${blank.length===1?' has':'s have'} no tag (${fmt(blankAmt)}) — open History, tap each one and give it a tag</div>`:'';
   document.getElementById('tagsMount').innerHTML=`<div class="card">
     <div class="sec">Tags</div>
-    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;">Type any tag you like when logging — petrol, milk, rent. Each tag has one type, which is all the Wealth meter needs. Tap a name to rename it · change its type in the first box · fix a typo with "Merge into…" · ✕ hides it from the Add screen.</div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;">Type any tag you like when logging — petrol, milk, rent. Each tag has one type, which is all the Wealth meter needs. Tap a type to change it · tap a name to rename it · fix a typo with "Merge into…" · ✕ hides it from the Add screen. Tip: long-press a tag button on the Add screen to do the same there.</div>
     ${blankNote}
     ${['mean','ind','inv','none'].map(n=>{const g=group(n);return g.length?head(n,g.length,SUB[n])+g.map(row).join(''):'';}).join('')}
     ${repT.length?`<div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:var(--purple);margin:14px 0 7px;">Debt repayment names · ${repT.length}</div>`+repT.map((t,k)=>{const i=expT.length+k;return `<div style="display:flex;align-items:center;gap:8px;background:var(--card2);border-radius:9px;padding:9px 10px;margin-bottom:6px;">
