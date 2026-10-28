@@ -582,6 +582,7 @@ function defaultState(){return{
   },
   foodMode:{}, // food tag → 'home' | 'out' (overrides the keyword seed)
   catNature:{}, // built-in category → nature override, set in Settings
+  deletedIds:[], // ids of deleted entries — kept so device merges never bring them back
   balanceFixes:[], // [{date,amount,from,to}] — corrections that line the logs up with the real bank + cash total
   greenMonths:[], // months that ended green — permanent dots
   goldMonths:[], // perfect months — both instruments full. The trophy shelf.
@@ -647,8 +648,11 @@ function mergeState(local,remote){
   const byId={};
   (remote.txs||[]).forEach(t=>{byId[t.id]=t;});
   (local.txs||[]).forEach(t=>{byId[t.id]=t;});
+  // deletions from either device win — a stale copy elsewhere can't resurrect them
+  const deletedIds=[...new Set([...(remote.deletedIds||[]),...(local.deletedIds||[])])];
+  const gone=new Set(deletedIds);
   const base=(local._updatedAt||0)>=(remote._updatedAt||0)?local:remote;
-  return {...defaultState(),...base,txs:Object.values(byId),_updatedAt:Math.max(local._updatedAt||0,remote._updatedAt||0)};
+  return {...defaultState(),...base,deletedIds,txs:Object.values(byId).filter(t=>!gone.has(t.id)),_updatedAt:Math.max(local._updatedAt||0,remote._updatedAt||0)};
 }
 async function pullRemote(){
   let remote=null;
@@ -1993,7 +1997,9 @@ function delTx(id){
     if(t.type==='repayment'&&!t.rotating&&t.investCleared) S.creditInvestOut=(S.creditInvestOut||0)+t.investCleared;
     logDebtSnapshot(S.settings.totalDebt);
   }
-  S.txs=S.txs.filter(x=>x.id!==id); save(); renderHist();
+  S.txs=S.txs.filter(x=>x.id!==id);
+  S.deletedIds=[...(S.deletedIds||[]),id]; // so another device's copy can't bring it back
+  save(); renderHist();
 }
 
 // LOANS (auto-drive Fixed Commitments + Total Debt)
