@@ -322,6 +322,7 @@ body.adding .fab-circle{display:none;}
     <div class="surplus-lbl">Left this month</div>
     <div class="surplus-amt" id="surplusAmt">₹0</div>
     <div class="surplus-sub" id="surplusSub"></div>
+    <div class="surplus-sub" id="surplusDebt" style="display:none;margin-top:6px;font-size:12px;"></div>
   </div>
 
   <!-- Gap pair -->
@@ -953,6 +954,11 @@ function renderDash(){
     :state==='wait'?'Waiting on income — spending is on track'
     :state==='bad'?'Needs more income — '+fmt(extraNeeded)+' more covers this month'
     :'Break-even — nothing extra yet';
+  // the big number is before debt payments — say what's already gone to debt, so it never reads as cash in hand
+  const repaidOwn=txs.filter(t=>t.type==='repayment'&&!t.rotating).reduce((a,t)=>a+t.amount,0);
+  const sd=document.getElementById('surplusDebt');
+  if(repaidOwn>0){ const after=surplus-repaidOwn; sd.style.display='block'; if(state==='good') document.getElementById('surplusSub').textContent='Left after spending — before debt payments'; sd.textContent=fmt(repaidOwn)+' already paid to debt · '+(after>=0?fmt(after)+' left after that':fmt(-after)+' short after that'); }
+  else sd.style.display='none';
 
   // Available balance — every month, not just this one
   const bal=ownMoneyLeft();
@@ -1952,7 +1958,7 @@ function renderHist(){
     const d=new Date(date+'T00:00:00');
     const isToday=date===todayStr;
     const lbl=isToday?'Today':d.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'});
-    const net=items.reduce((s,t)=>t.type==='income'?s+t.amount:t.type==='expense'?s-t.amount:s,0);
+    const net=items.reduce((s,t)=>t.type==='income'?s+t.amount:(t.type==='expense'||(t.type==='repayment'&&!t.rotating))?s-t.amount:s,0); // own-money repayments leave the pocket too
     const open=filterActive||(!histRange&&isToday); // range mode: collapsed bars, overview on top
     return `<div class="date-group">
     <div class="day-bar${open?' open':''}" onclick="toggleDay('${date}')">
