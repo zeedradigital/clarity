@@ -306,6 +306,16 @@ body.adding .fab-circle{display:none;}
 <!-- DASHBOARD -->
 <div class="view active" id="view-dash">
 
+  <!-- Available balance — own money in hand, all months, by the logs -->
+  <div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+    <div style="min-width:0;">
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px;">Available balance</div>
+      <div style="font-size:24px;font-weight:800;" id="d_balance">₹0</div>
+      <div style="font-size:10px;color:var(--muted);" id="d_balanceSub">Your own money (bank + cash), by your logs</div>
+    </div>
+    <button onclick="correctBalance()" style="flex-shrink:0;background:var(--card2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-size:11px;font-weight:700;padding:9px 11px;cursor:pointer;">Correct balance</button>
+  </div>
+
   <!-- THE NUMBER THAT MATTERS: what's left this month -->
   <div class="surplus-hero" id="surplusHero">
     <div class="surplus-lbl">Left this month</div>
@@ -458,7 +468,7 @@ body.adding .fab-circle{display:none;}
   <div class="card">
     <div class="sec">Monthly Wealth Target — investment + debt clearance</div>
     <input class="note-inp" id="st_target" type="number" inputmode="numeric" placeholder="₹ this month's target" style="margin-top:4px;">
-    <div style="font-size:10px;color:var(--muted);">Update this at the start of each month</div>
+    <div style="font-size:10px;color:var(--muted);">Carries over to next month until you change it</div>
     <button class="big-save" style="margin:12px 0 0;" onclick="saveSettings()">Save Target</button>
   </div>
   <div id="loansMount"></div>
@@ -514,7 +524,7 @@ body.adding .fab-circle{display:none;}
       <span class="sheet-sub" id="fundOwnSub">From your earnings</span>
     </button>
     <button class="sheet-btn credit" id="fundCreditBtn" onclick="pickFund('credit')">
-      <span id="fundCreditLbl">Credit Card</span>
+      <span id="fundCreditLbl">Borrowed</span>
       <span class="sheet-sub" id="fundCreditSub">Adds to your debt</span>
     </button>
     <button class="sheet-cancel" onclick="hideFundSheet()">Cancel</button>
@@ -524,7 +534,7 @@ body.adding .fab-circle{display:none;}
 <!-- WHICH CARD/LOAN SHEET — credit spends must land on a loan when loans are itemized -->
 <div class="sheet-overlay" id="creditLoanSheet" onclick="closeCreditLoanSheet(event)">
   <div class="sheet">
-    <div class="sheet-title">Which card / loan is this going on?</div>
+    <div class="sheet-title">Which debt is this going on?</div>
     <div id="creditLoanBtns"></div>
     <button class="sheet-cancel" onclick="document.getElementById('creditLoanSheet').classList.remove('show')">Cancel</button>
   </div>
@@ -571,6 +581,8 @@ function defaultState(){return{
     gym:'c_health',equipment:'c_health'
   },
   foodMode:{}, // food tag → 'home' | 'out' (overrides the keyword seed)
+  catNature:{}, // built-in category → nature override, set in Settings
+  balanceFixes:[], // [{date,amount,from,to}] — corrections that line the logs up with the real bank + cash total
   greenMonths:[], // months that ended green — permanent dots
   goldMonths:[], // perfect months — both instruments full. The trophy shelf.
   creditInvestOut:0, // borrowed money sitting inside investments — repaying it converts to score
@@ -604,7 +616,12 @@ const shortAmt=n=>n>=100000?'₹'+(n/100000).toFixed(1).replace('.0','')+'L':n>=
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 const today=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
 const mkey=()=>`${S.vy}-${S.vm}`;
-const getTarget=()=>S.monthTargets[mkey()]||0;
+const getTarget=()=>{ // a month without its own target inherits the latest earlier one
+  if(S.monthTargets[mkey()]) return S.monthTargets[mkey()];
+  const cur=S.vy*12+S.vm; let best=-1,val=0;
+  Object.entries(S.monthTargets||{}).forEach(([k,v])=>{const [y,m]=k.split('-').map(Number);const n=y*12+m;if(v&&n<cur&&n>best){best=n;val=v;}});
+  return val;
+};
 const daysIn=(m,y)=>new Date(y,m+1,0).getDate();
 const monLabel=(m,y)=>new Date(y,m,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
 const toast=(msg,ms=2200)=>{const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),ms);};
@@ -923,6 +940,13 @@ function renderDash(){
     :state==='bad'?'Needs more income — '+fmt(extraNeeded)+' more covers this month'
     :'Break-even — nothing extra yet';
 
+  // Available balance — every month, not just this one
+  const bal=ownMoneyLeft();
+  const be=document.getElementById('d_balance');
+  be.textContent=(bal<0?'−':'')+fmt(bal); be.className=bal<0?'cr':'';
+  const lastFix=(S.balanceFixes||[]).slice(-1)[0];
+  document.getElementById('d_balanceSub').textContent=lastFix?'By your logs · last corrected '+lastFix.date:'Your own money (bank + cash), by your logs';
+
   // Fixed EMIs line
   document.getElementById('d_fixed').textContent=fixed?fmt(fixed):'Not set';
   // CC trap warning — injected dynamically
@@ -932,8 +956,8 @@ function renderDash(){
     const blindPct=spent>0?Math.round(cardSpent/spent*100):0;
     ccWarnEl.style.display='block';
     let html=``;
-    if(cardSpent>0) html+=`<strong>Card spending: ${fmt(cardSpent)}</strong> (${blindPct}% of your total spend is borrowed money — not from earnings)<br>`;
-    if(rotations>0) html+=`<strong>Card Rotation: ${fmt(rotations)}</strong> — you repaid a card using another card. Total debt unchanged.<br>`;
+    if(cardSpent>0) html+=`<strong>Borrowed spending: ${fmt(cardSpent)}</strong> (${blindPct}% of your total spend is borrowed money — not from earnings)<br>`;
+    if(rotations>0) html+=`<strong>Debt rotation: ${fmt(rotations)}</strong> — you repaid one debt with another. Total debt unchanged.<br>`;
     if(poolOut>0){
       const snapP=calcSnapshot();
       const surP=snapP.n?snapP.avgSurplus:snapP.currentSurplus;
@@ -1165,8 +1189,8 @@ function renderGoal(){
     <div style="font-size:14px;font-weight:700;margin-bottom:8px;color:${duel.level>=3?'var(--green)':duel.level>=1?'var(--yellow)':'var(--red)'};">${rungNames[duel.level]}</div>
     <div class="row"><span class="rl">Repayment (own money)</span><span class="rv" style="color:var(--purple)">${fmt(duel.repay)}</span></div>
     <div class="row"><span class="rl">Investment</span><span class="rv cg">${fmt(duel.invest)}</span></div>
-    <div class="row"><span class="rl">Indulgence</span><span class="rv cr">${fmt(duel.non)}</span></div>
-    <div class="row"><span class="rl">Meaningful (never judged)</span><span class="rv" style="color:var(--muted)">${fmt(duel.ess)}</span></div>
+    <div class="row"><span class="rl">Non-essential</span><span class="rv cr">${fmt(duel.non)}</span></div>
+    <div class="row"><span class="rl">Essential (never judged)</span><span class="rv" style="color:var(--muted)">${fmt(duel.ess)}</span></div>
     <div style="font-size:12px;font-weight:600;color:var(--accent);margin-top:10px;">${nextHint}</div>
     ${dotCount||((S.goldMonths||[]).length)?`<div style="font-size:11px;color:var(--muted);margin-top:8px;">Green months: ${dotCount}${(S.goldMonths||[]).length?` · <span style="color:#F5C84C;font-weight:700;">Gold (perfect): ${(S.goldMonths||[]).length}</span>`:''} — earned forever.</div>`:''}
   </div>`;
@@ -1306,6 +1330,7 @@ function foodIsHome(key){
 // NATURE — every rupee is indulgence ('ind'), meaningful ('mean'), or investment ('inv')
 const CAT_NATURE={family:'mean',business:'mean',personal:'ind',friends:'ind',transport:'mean',invest:'inv'};
 function catNature(id){
+  if(S.catNature&&S.catNature[id]) return S.catNature[id];
   if(CAT_NATURE[id]) return CAT_NATURE[id];
   const c=(S.customCats||[]).find(x=>x.id===id);
   return c?c.nature:null; // 'other' and unknown → unjudged
@@ -1376,7 +1401,7 @@ function repayTags(){
     if(t.type!=='repayment'||!t.note) return;
     const raw=t.note.trim(); const key=raw.toLowerCase();
     if(!key||hid.has(key)) return;
-    if(key.startsWith('repayment')||key.startsWith('card rotation')) return; // auto notes
+    if(key.startsWith('repayment')||key.startsWith('card rotation')||key.startsWith('debt rotation')) return; // auto notes
     if(!m[key]) m[key]={label:raw,n:0};
     m[key].n++;
   });
@@ -1438,7 +1463,7 @@ function smartRepeat(){
     past=[...S.txs].filter(t=>{
       if(t.type!=='repayment'||t.amount!==amt||!t.note) return false;
       const k=t.note.trim().toLowerCase();
-      return k&&!k.startsWith('repayment')&&!k.startsWith('card rotation');
+      return k&&!k.startsWith('repayment')&&!k.startsWith('card rotation')&&!k.startsWith('debt rotation');
     }).sort((a,b)=>b.date.localeCompare(a.date))[0]||null;
   }
   if(!past){
@@ -1509,17 +1534,23 @@ function updateNewTagPicker(){
   const wrap=document.getElementById('newTagCatPicker'); if(!wrap) return;
   if(curType!=='expense'){ wrap.style.display='none'; return; }
   const key=(document.getElementById('noteInp').value||'').trim().toLowerCase();
-  const known=key&&S.tagMap&&S.tagMap[key]!==undefined;
-  const hasHistory=key&&S.txs.some(t=>t.type==='expense'&&(t.note||'').trim().toLowerCase()===key);
-  const guessed=key?guessCatFromNote(key):null;
-  if(!key||known||hasHistory||guessed){ wrap.style.display='none'; return; }
+  if(!key||!tagNeedsCat(key)){ wrap.style.display='none'; return; }
   wrap.style.display='block';
-  document.getElementById('newTagCatSel').innerHTML=allCats().map(c=>`<div class="chip" onclick="assignNoteCat('${c.id}')">${c.label}</div>`).join('');
+  document.getElementById('newTagCatSel').innerHTML=allCats().filter(c=>c.id!=='other').map(c=>`<div class="chip" onclick="assignNoteCat('${c.id}')">${c.label}</div>`).join('');
+}
+// A tag with no real category would be filed as Other — which the Wealth meter can't count
+function tagNeedsCat(key){
+  const m=S.tagMap&&S.tagMap[key];
+  if(m) return m==='other'||!allCats().some(c=>c.id===m);
+  const votes={};
+  S.txs.forEach(t=>{if(t.type==='expense'&&t.cat&&t.cat!=='other'&&(t.note||'').trim().toLowerCase()===key)votes[t.cat]=(votes[t.cat]||0)+1;});
+  return !Object.keys(votes).length&&!guessCatFromNote(key);
 }
 function assignNoteCat(catId){
   const key=(document.getElementById('noteInp').value||'').trim().toLowerCase(); if(!key) return;
   if(!S.tagMap)S.tagMap={};
   S.tagMap[key]=catId;
+  S.txs.forEach(t=>{ if(t.type==='expense'&&t.cat==='other'&&(t.note||'').trim().toLowerCase()===key) t.cat=catId; });
   save();
   document.getElementById('newTagCatPicker').style.display='none';
   toast('Filed as '+catInfo(catId).label);
@@ -1563,7 +1594,7 @@ function np(k){
 // actually left as own money. Never resets, never pre-deducts EMIs: an obligation isn't an outflow
 // until it's logged. A soft mirror, never a gate — the app can't see the pocket, only the logs.
 function ownMoneyLeft(){
-  let left=0;
+  let left=(S.balanceFixes||[]).reduce((a,f)=>a+f.amount,0);
   S.txs.forEach(t=>{
     if(editId&&t.id===editId) return; // the entry being edited is about to be replaced
     if(t.type==='income') left+=t.amount;
@@ -1572,9 +1603,28 @@ function ownMoneyLeft(){
   });
   return left;
 }
+// Logs drift from the pocket — one correction lines them up again without touching history
+function correctBalance(){
+  const cur=Math.round(ownMoneyLeft());
+  const raw=(prompt(`Clarity shows ${fmt(cur)}${cur<0?' (minus)':''}.\n\nWhat is your real balance right now — bank + cash? (₹)`)||'').replace(/[,₹\s]/g,'');
+  if(raw==='') return;
+  const real=parseFloat(raw);
+  if(isNaN(real)){ toast('Enter a number'); return; }
+  const diff=real-cur;
+  if(!diff){ toast('Already matches'); return; }
+  if(!S.balanceFixes) S.balanceFixes=[];
+  S.balanceFixes.push({date:today(),amount:diff,from:cur,to:real});
+  save(); renderDash();
+  toast('Balance set to '+fmt(real)+' ('+(diff>0?'+':'−')+fmt(diff)+' correction)');
+}
 function submitTx(){
   const amt=amtTotal(); if(!amt){toast('Enter an amount');return;}
   if(curType==='income'){ finalizeTx('own'); return; }
+  if(curType==='expense'){ // every spend needs a tag with a real category, or the meters can't see it
+    const key=document.getElementById('noteInp').value.trim().toLowerCase();
+    if(!key){ toast('Type a tag first — e.g. petrol, rent'); document.getElementById('noteInp').focus(); return; }
+    if(tagNeedsCat(key)){ updateNewTagPicker(); toast('Pick a category for this tag first'); return; }
+  }
   // Spent + Repayment: the source question is unskippable — asked at the moment of saving
   const isRep=curType==='repayment';
   document.getElementById('fundTitle').textContent=isRep?'Repayment funded by?':'Paid from?';
@@ -1587,8 +1637,8 @@ function submitTx(){
     os.textContent=(isRep?'Real debt reduction':'From your earnings')+' · '+fmt(ownLeft)+' left by your logs';
     os.style.color='';
   }
-  document.getElementById('fundCreditLbl').textContent=isRep?'Card Rotation':'Credit Card';
-  document.getElementById('fundCreditSub').textContent=isRep?'Debt moves to another card — doesn\'t reduce':'Adds to your debt';
+  document.getElementById('fundCreditLbl').textContent=isRep?'Debt Rotation':'Borrowed';
+  document.getElementById('fundCreditSub').textContent=isRep?'Paid one debt with another — total debt unchanged':'Adds to your debt';
   document.getElementById('fundCreditBtn').className='sheet-btn '+(isRep?'rot':'credit');
   document.getElementById('fundSheet').classList.add('show');
 }
@@ -1654,7 +1704,7 @@ function finalizeTx(fund){
     tx.rotating=(fund==='credit');
     const loan=(S.loans||[]).find(l=>l.id===selLoan);
     if(loan){ tx.loanId=loan.id; tx.loanName=loan.name; }
-    tx.note=note||((tx.rotating?'Card Rotation':'Repayment')+(loan?(' — '+loan.name):''));
+    tx.note=note||((tx.rotating?'Debt Rotation':'Repayment')+(loan?(' — '+loan.name):''));
     if(loan&&!tx.rotating){ loan.balance=Math.max(0,(+loan.balance||0)-amt); applyLoans(); logDebtSnapshot(S.settings.totalDebt); }
     else if(!tx.rotating&&!(S.loans&&S.loans.length)){ S.settings.totalDebt=Math.max(0,(S.settings.totalDebt||0)-amt); logDebtSnapshot(S.settings.totalDebt); }
     if(!tx.rotating){ // own money first makes borrowed investing whole — that slice scores as INVEST
@@ -1705,7 +1755,7 @@ function finalizeTx(fund){
   editId=null; const eb2=document.getElementById('editBar'); if(eb2)eb2.style.display='none';
   renderAdd();
   const cls=curType==='expense'?'exp':curType==='repayment'?'rep':'';
-  let lbl=old?'Updated':(curType==='expense'?'Spent — logged':curType==='income'?incomeLbl:tx.rotating?'Card rotation — logged':'Repayment — logged');
+  let lbl=old?'Updated':(curType==='expense'?'Spent — logged':curType==='income'?incomeLbl:tx.rotating?'Debt rotation — logged':'Repayment — logged');
   if(!old&&curType==='expense'&&(S.settings.totalDebt||0)>0){
     const ami=avgMonthlyIncome();
     if(ami>0&&amt>ami*0.1){ const dd=debtDaysStr(amt); if(dd) lbl='Spent — logged · '+dd; }
@@ -1778,7 +1828,7 @@ function downloadPDF(){
   <div class="sub">${txs.length} entries · real money only — borrowed money is never counted as income</div>
   <div class="sum">
     <div>In<b>${fmt(s.inc)}</b></div><div>Out<b>${fmt(s.out)}</b></div><div>Net<b>${s.net<0?'−':''}${fmt(s.net)}</b></div>
-    <div>Invested<b>${fmt(s.inv)}</b></div><div>Repaid (own)<b>${fmt(s.rep)}</b></div><div>Indulgence<b>${fmt(s.ind)}</b></div><div>Meaningful<b>${fmt(s.mean)}</b></div>
+    <div>Invested<b>${fmt(s.inv)}</b></div><div>Repaid (own)<b>${fmt(s.rep)}</b></div><div>Non-essential<b>${fmt(s.ind)}</b></div><div>Essential<b>${fmt(s.mean)}</b></div>
   </div>
   <table><thead><tr><th>Date</th><th>Type</th><th>Tag</th><th>Category</th><th>Via</th><th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table>
   <script>window.print()<\/script></body></html>`;
@@ -1872,8 +1922,8 @@ function renderHist(){
         <span>Net <b style="color:${s.net>=0?'var(--green)':'var(--red)'}">${s.net<0?'−':''}${fmt(s.net)}</b></span>
         <span>Invested <b style="color:var(--green)">${fmt(s.inv)}</b></span>
         <span>Repaid <b style="color:var(--purple)">${fmt(s.rep)}</b></span>
-        <span>Indulgence <b style="color:var(--red)">${fmt(s.ind)}</b></span>
-        <span>Meaningful <b style="color:var(--text)">${fmt(s.mean)}</b></span>
+        <span>Non-essential <b style="color:var(--red)">${fmt(s.ind)}</b></span>
+        <span>Essential <b style="color:var(--text)">${fmt(s.mean)}</b></span>
       </div>
     </div>`;
   }
@@ -1915,8 +1965,8 @@ function renderHist(){
       const prefix=isIncome?'+':isRepay?'↓':'-';
       let meta='';
       if(isIncome) meta='Received';
-      else if(isRepay) meta=(t.rotating?'Card Rotation':'Own Money Repayment')+(t.loanName?(' · '+t.loanName):'');
-      else meta=t.fund==='credit'?'Credit Card':'Own Money';
+      else if(isRepay) meta=(t.rotating?'Debt Rotation':'Own Money Repayment')+(t.loanName?(' · '+t.loanName):'');
+      else meta=t.fund==='credit'?'Borrowed':'Own Money';
       const dotCol=isRepay?'var(--purple)':c.color;
       return `<div class="tx" onclick="editTx('${t.id}')" style="cursor:pointer;"><div class="tx-ico" style="background:${isRepay?'rgba(178,154,250,0.16)':c.color+'22'}"><span style="display:block;width:10px;height:10px;border-radius:50%;background:${dotCol};"></span></div><div class="tx-info"><div class="tx-note">${esc(t.note||catInfo(t.cat).label)}</div><div class="tx-meta">${meta}</div></div><div class="tx-amt" style="color:${col}">${prefix}${fmt(t.amount)}</div><button class="tx-del" onclick="event.stopPropagation();delTx('${t.id}')">✕</button></div>`;
     }).join('')}</div>
@@ -1970,24 +2020,33 @@ function updateLoanBalance(id){
   const l=(S.loans||[]).find(x=>x.id===id); if(!l) return;
   l.balance=parseFloat(el.value)||0; applyLoans(); logDebtSnapshot(S.settings.totalDebt); save(); renderSettings(); toast('Balance updated');
 }
+function updateLoanEmi(id){
+  const el=document.getElementById('le_'+id); if(!el) return;
+  const l=(S.loans||[]).find(x=>x.id===id); if(!l) return;
+  l.emi=parseFloat(el.value)||0; applyLoans(); save(); renderSettings(); toast('EMI updated');
+}
+function renameLoan(id){
+  const l=(S.loans||[]).find(x=>x.id===id); if(!l) return;
+  const nv=(prompt('Rename debt',l.name)||'').trim(); if(!nv) return;
+  l.name=nv; save(); renderSettings(); toast('Renamed to '+nv);
+}
 function loansCardHTML(){
   const list=S.loans||[];
+  const inp='width:100%;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:14px;font-weight:600;text-align:right;box-sizing:border-box;';
   const rows=list.map(l=>`<div style="background:var(--card2);border-radius:9px;padding:10px;margin-bottom:8px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-      <span style="font-size:13px;font-weight:700;">${l.name}</span>
-      <button onclick="removeLoan('${l.id}')" style="background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;">✕</button>
+      <span onclick="renameLoan('${l.id}')" style="font-size:13px;font-weight:700;cursor:pointer;border-bottom:1px dashed var(--border);">${esc(l.name)}</span>
+      <button onclick="if(confirm('Remove ${esc(l.name).replace(/'/g,'')} from your debts?'))removeLoan('${l.id}')" aria-label="Remove debt" style="background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;">✕</button>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <span style="font-size:10px;color:var(--muted);">EMI ${fmt(l.emi)}/mo</span>
-      <span style="flex:1;"></span>
-      <span style="font-size:10px;color:var(--muted);">Balance ₹</span>
-      <input id="lb_${l.id}" type="number" inputmode="numeric" value="${l.balance||''}" onchange="updateLoanBalance('${l.id}')" style="width:108px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:14px;font-weight:600;text-align:right;">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <label style="font-size:10px;color:var(--muted);">Owed ₹<input id="lb_${l.id}" type="number" inputmode="numeric" value="${l.balance||''}" onchange="updateLoanBalance('${l.id}')" style="${inp}margin-top:3px;"></label>
+      <label style="font-size:10px;color:var(--muted);">EMI ₹/mo (optional)<input id="le_${l.id}" type="number" inputmode="numeric" value="${l.emi||''}" placeholder="none" onchange="updateLoanEmi('${l.id}')" style="${inp}margin-top:3px;"></label>
     </div>
   </div>`).join('');
   const hasLoans=list.length>0;
   const totals=hasLoans?`<div class="row" style="border:none;padding:8px 0 0;"><span class="rl">Monthly EMIs → Fixed</span><span class="rv cy">${fmt(loansEmi())}</span></div>
     <div class="row" style="border:none;padding:2px 0 0;"><span class="rl">Total balances → Debt</span><span class="rv cr">${fmt(loansBal())}</span></div>`:'';
-  const legacy=!hasLoans?`<div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Debt updates itself from repayments and card spends. Correct these if life moved them:</div>
+  const legacy=!hasLoans?`<div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Debt updates itself from repayments and borrowed spending. Correct these if life moved them:</div>
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
     <span style="font-size:11px;color:var(--muted);width:86px;flex-shrink:0;">Total debt</span>
     <input class="note-inp" id="fixDebt" type="number" inputmode="numeric" placeholder="₹" value="${S.settings.totalDebt||''}" style="margin-bottom:0;flex:1;min-width:0;">
@@ -1998,54 +2057,49 @@ function loansCardHTML(){
   </div>
   <button onclick="fixDebtNow()" class="save-sm" style="width:100%;margin-bottom:12px;">Update Setup Numbers</button>`:'';
   return `<div class="card">
-    <div class="sec">Loans &amp; EMIs</div>
-    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;">EMIs sum into your fixed commitments; balances into your total debt.</div>
-    ${legacy}${rows||'<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">No loans added yet.</div>'}
+    <div class="sec">Debts</div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;">Every debt in one place — bank loans, cards, family, friends. Owed amounts add up to your total debt; EMIs (if any) add up to your fixed monthly payments. Tap a name to rename it.</div>
+    ${legacy}${rows||'<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">No debts added yet.</div>'}
     <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:10px;">
-      <div class="set-label" style="margin-top:0;">Add a loan</div>
-      <input class="note-inp" id="ln_name" placeholder="Name — e.g. Gold loan, Bike, Credit card">
+      <div class="set-label" style="margin-top:0;">Add a debt</div>
+      <input class="note-inp" id="ln_name" placeholder="Name — e.g. HDFC card, Brother, Gold loan">
       <div style="display:flex;gap:8px;">
-        <input class="note-inp" id="ln_emi" type="number" inputmode="numeric" placeholder="Monthly EMI ₹" style="flex:1;">
-        <input class="note-inp" id="ln_balance" type="number" inputmode="numeric" placeholder="Outstanding ₹" style="flex:1;">
+        <input class="note-inp" id="ln_balance" type="number" inputmode="numeric" placeholder="Owed ₹" style="flex:1;min-width:0;">
+        <input class="note-inp" id="ln_emi" type="number" inputmode="numeric" placeholder="EMI ₹ (optional)" style="flex:1;min-width:0;">
       </div>
-      <button class="big-save" style="margin-top:2px;" onclick="addLoan()">+ Add Loan</button>
+      <button class="big-save" style="margin-top:2px;" onclick="addLoan()">+ Add Debt</button>
     </div>
     ${totals}
   </div>`;
 }
 
 // SETTINGS
-const NATURE_LBL={ind:'Indulgence',mean:'Meaningful',inv:'Invest'};
+const NATURE_LBL={ind:'Non-essential',mean:'Essential',inv:'Invest'};
 const NATURE_COL={ind:['var(--red-soft)','var(--red-line)','var(--red)'],mean:['var(--accent-soft)','var(--accent)','var(--accent)'],inv:['var(--green-soft)','var(--green-line)','var(--green)']};
 const CC_COLORS=['#F97362','#4FC3F7','#BA68C8','#FFD54F','#81C784','#FF8A65','#64B5F6'];
-// The only way a category gets created — walks name, then nature, one step at a time.
-// No default nature exists: an unanswered or invalid step aborts instead of guessing.
-function createCategoryInline(){
-  const name=(prompt('New category name — e.g. Pets, Subscriptions')||'').trim();
-  if(!name) return null;
-  if([...allCats(),...INC_CATS].some(c=>c.label.toLowerCase()===name.toLowerCase())){ toast('That category already exists'); return null; }
-  const natRaw=(prompt(
-    `"${name}" — what's its nature? This decides how it's scored:\n\n`+
-    `1 = Meaningful — essential, non-negotiable: fuel, rent, health, groceries, even an unexpected repair. Never judged.\n\n`+
-    `2 = Indulgence — optional spend: entertainment, cravings, outings. Not a judgment, just your own clarity — you decide what counts. This is what Invest has to beat.\n\n`+
-    `3 = Invest — grows your wealth, moves you toward freedom. This is what beats Indulgence.\n\n`+
-    `Type 1, 2, or 3`
-  )||'').trim();
-  const map={'1':'mean','2':'ind','3':'inv'};
-  const nat=map[natRaw];
-  if(!nat){ toast('Category not created — pick 1, 2, or 3 for its nature'); return null; }
+// Built-in or custom — every category's nature is the user's call
+function setCatNature(id,nat){
+  const c=(S.customCats||[]).find(x=>x.id===id);
+  if(c) c.nature=nat; else { if(!S.catNature)S.catNature={}; S.catNature[id]=nat; }
+  save(); renderSettings(); toast(catInfo(id).label+' → '+NATURE_LBL[nat]);
+}
+function addCategory(){
+  const name=(document.getElementById('ncName').value||'').trim();
+  const nat=document.getElementById('ncNature').value;
+  if(!name){ toast('Give the category a name'); return; }
+  if(!NATURE_LBL[nat]){ toast('Pick Essential, Non-essential or Invest'); return; }
   const id='c_'+name.toLowerCase().replace(/[^a-z0-9]+/g,'');
+  if(id==='c_'||[...allCats(),...INC_CATS].some(c=>c.id===id||c.label.toLowerCase()===name.toLowerCase())){ toast('That category already exists'); return; }
   if(!S.customCats)S.customCats=[];
   S.customCats.push({id,label:name,color:CC_COLORS[S.customCats.length%CC_COLORS.length],nature:nat});
-  toast(name+' added — '+NATURE_LBL[nat]);
-  return id;
+  save(); renderSettings(); toast(name+' added — '+NATURE_LBL[nat]);
 }
 function removeCustomCat(id){
   const c=(S.customCats||[]).find(x=>x.id===id); if(!c) return;
   S.txs.forEach(t=>{if(t.type==='expense'&&t.cat===id)t.cat='other';});
   Object.keys(S.tagMap||{}).forEach(k=>{if(S.tagMap[k]===id)S.tagMap[k]='other';});
   S.customCats=S.customCats.filter(x=>x.id!==id);
-  save(); renderSettings(); toast(c.label+' removed — its entries moved to Other');
+  save(); renderSettings(); toast(c.label+' removed — its tags need a new category');
 }
 function renameTag(i){
   const t=_setTags[i]; if(!t) return;
@@ -2059,22 +2113,31 @@ function renameTag(i){
   S.hiddenTags=(S.hiddenTags||[]).map(k=>k===t.key?nk:k);
   save(); renderSettings(); toast('Renamed to '+nv);
 }
+// Typos become one tag — every entry moves over and takes the target's category
+function mergeTag(i,j){
+  const t=_setTags[i], to=_setTags[+j];
+  if(j===''||!t||!to||t.key===to.key) return;
+  const n=S.txs.filter(x=>x.type==='expense'&&(x.note||'').trim().toLowerCase()===t.key).length;
+  const ok=id=>id!=='other'&&allCats().some(c=>c.id===id);
+  const cat=ok(to.cat)?to.cat:t.cat;
+  if(!confirm(`Merge "${t.label}" into "${to.label}"?\n\n${n} entr${n===1?'y':'ies'} will be renamed "${to.label}" and filed under ${catInfo(cat).label}.`)){ renderSettings(); return; }
+  S.txs.forEach(x=>{
+    if(x.type!=='expense') return;
+    const k=(x.note||'').trim().toLowerCase();
+    if(k===t.key){ x.note=to.label; x.cat=cat; } else if(k===to.key) x.cat=cat;
+  });
+  if(!S.tagMap)S.tagMap={};
+  S.tagMap[to.key]=cat; delete S.tagMap[t.key];
+  if(S.foodMode&&S.foodMode[t.key]!==undefined){ if(S.foodMode[to.key]===undefined) S.foodMode[to.key]=S.foodMode[t.key]; delete S.foodMode[t.key]; }
+  S.manualTags=(S.manualTags||[]).filter(m=>m.key!==t.key);
+  S.hiddenTags=(S.hiddenTags||[]).filter(k=>k!==t.key);
+  save(); renderSettings(); toast(`${t.label} merged into ${to.label}`);
+}
 function renameCustomCat(id){
   const c=(S.customCats||[]).find(x=>x.id===id); if(!c) return;
   const nv=(prompt('Rename category',c.label)||'').trim();
   if(!nv) return;
   c.label=nv; save(); renderSettings(); toast('Renamed to '+nv);
-}
-function cycleCatNature(id){
-  const c=(S.customCats||[]).find(x=>x.id===id); if(!c) return;
-  c.nature=c.nature==='ind'?'mean':c.nature==='mean'?'inv':'ind';
-  save(); renderSettings(); toast(c.label+' → '+NATURE_LBL[c.nature]);
-}
-function handleAddTagCatChange(sel){
-  if(sel.value!=='__new__') return;
-  const nid=createCategoryInline();
-  if(nid){ save(); sel.innerHTML=allCats().map(c=>`<option value="${c.id}"${c.id===nid?' selected':''}>${c.label}</option>`).join('')+'<option value="__new__">+ Add new category</option>'; }
-  else{ sel.value=CATS[0].id; }
 }
 function addManualTag(){
   const name=(document.getElementById('mtName').value||'').trim();
@@ -2094,13 +2157,13 @@ function removeTag(i){
   S.hiddenTags.push(t.key);
   save(); renderSettings(); toast('Tag hidden from Add screen');
 }
-function setTagCat(i,catId){
+function unhideTag(i){
   const t=_setTags[i]; if(!t) return;
-  if(catId==='__new__'){
-    const nid=createCategoryInline();
-    if(!nid){ renderSettings(); return; }
-    catId=nid;
-  }
+  S.hiddenTags=(S.hiddenTags||[]).filter(k=>k!==t.key);
+  save(); renderSettings(); toast(t.label+' back on the Add screen');
+}
+function setTagCat(i,catId){
+  const t=_setTags[i]; if(!t||!catId) return;
   if(!S.tagMap) S.tagMap={};
   S.tagMap[t.key]=catId;
   // re-file every existing entry carrying this tag — analytics stay truthful
@@ -2116,56 +2179,104 @@ function toggleFoodMode(i){
   save(); renderSettings();
   toast(t.label+' → '+(foodIsHome(t.key)?'Home food':'Outside food'));
 }
+// Every tag ever typed — no cap, nothing filtered out — so all of them can be managed here
+function allTags(){
+  const m={};
+  S.txs.forEach(t=>{
+    if(t.type!=='expense') return;
+    const key=(t.note||'').trim().toLowerCase(); if(!key) return;
+    if(!m[key]) m[key]={label:t.note.trim(),n:0,amt:0,cats:{}};
+    m[key].n++; m[key].amt+=t.amount; m[key].cats[t.cat]=(m[key].cats[t.cat]||0)+1;
+  });
+  (S.manualTags||[]).forEach(t=>{ if(!m[t.key]) m[t.key]={label:t.label,n:0,amt:0,cats:{}}; });
+  const hid=new Set((S.hiddenTags||[]).map(s=>s.toLowerCase()));
+  return Object.entries(m).map(([key,v])=>{
+    const top=(Object.entries(v.cats).sort((a,b)=>b[1]-a[1])[0]||['other'])[0];
+    return {key,label:v.label,n:v.n,amt:v.amt,cat:(S.tagMap&&S.tagMap[key])||top,hidden:hid.has(key)};
+  }).sort((a,b)=>b.n-a.n);
+}
 function renderSettings(){
   document.getElementById('st_target').value=getTarget()||'';
   document.getElementById('loansMount').innerHTML=loansCardHTML();
-  // Your categories — each carries a nature
-  const cc=S.customCats||[];
+  const cats=allCats().filter(c=>c.id!=='other');
+  const isCustom=id=>(S.customCats||[]).some(c=>c.id===id);
+  const selStyle='min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:600;padding:8px 6px;';
+  const natBtns=(id,cur)=>['mean','ind','inv'].map(n=>`<button onclick="setCatNature('${id}','${n}')" style="flex:1;font-size:11px;font-weight:700;padding:7px 2px;border-radius:7px;cursor:pointer;${cur===n?`color:${NATURE_COL[n][2]};background:${NATURE_COL[n][0]};border:1px solid ${NATURE_COL[n][1]};`:'color:var(--muted);background:none;border:1px solid var(--border);'}">${NATURE_LBL[n]}</button>`).join('');
   document.getElementById('catsMount').innerHTML=`<div class="card">
-    <div class="sec">Categories — the big groups</div>
-    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;">Food, Personal, Invest… every category has a nature: Family, Business &amp; Transport = Meaningful · Personal &amp; Friends = Indulgence · Invest grows wealth.</div>
-    ${cc.map(c=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-      <span style="width:10px;height:10px;border-radius:50%;background:${c.color};flex-shrink:0;"></span>
-      <span onclick="renameCustomCat('${c.id}')" style="flex:1;min-width:0;font-size:13px;font-weight:600;cursor:pointer;border-bottom:1px dashed var(--border);">${esc(c.label)}</span>
-      <button onclick="cycleCatNature('${c.id}')" style="font-size:11px;font-weight:700;color:${NATURE_COL[c.nature][2]};background:${NATURE_COL[c.nature][0]};border:1px solid ${NATURE_COL[c.nature][1]};border-radius:8px;padding:6px 9px;cursor:pointer;">${NATURE_LBL[c.nature]}</button>
-      <button onclick="removeCustomCat('${c.id}')" aria-label="Remove category" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:6px;">✕</button>
+    <div class="sec">Categories</div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px;">Each category is Essential, Non-essential or Invest — that is what the Wealth meter counts. Tap to change it.</div>
+    ${cats.map(c=>`<div style="margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="width:10px;height:10px;border-radius:50%;background:${c.color};flex-shrink:0;"></span>
+        <span ${isCustom(c.id)?`onclick="renameCustomCat('${c.id}')" `:''}style="flex:1;min-width:0;font-size:13px;font-weight:700;${isCustom(c.id)?'cursor:pointer;border-bottom:1px dashed var(--border);':''}">${esc(c.label)}</span>
+        ${isCustom(c.id)?`<button onclick="if(confirm('Remove the ${esc(c.label).replace(/'/g,'')} category? Its tags will need a new category.'))removeCustomCat('${c.id}')" aria-label="Remove category" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:4px 6px;">✕</button>`:''}
+      </div>
+      ${c.id==='food'
+        ?`<div style="font-size:11px;color:var(--muted);line-height:1.5;">Home food = Essential · Outside food = Non-essential — set per tag below</div>`
+        :`<div style="display:flex;gap:5px;">${natBtns(c.id,catNature(c.id))}</div>`}
     </div>`).join('')}
-    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:${cc.length?'10px':'0'};">New categories are created from the "+ Add new category" option in a tag's dropdown below — that walks you through naming it and picking its nature one step at a time.</div>
+    <div style="border-top:1px solid var(--border);padding-top:10px;">
+      <div class="set-label" style="margin-top:0;">Add a category</div>
+      <div style="display:flex;gap:8px;">
+        <input class="note-inp" id="ncName" placeholder="Name — e.g. Kids, Rent" style="flex:1.3;margin-bottom:0;min-width:0;">
+        <select id="ncNature" style="flex:1;${selStyle}">
+          <option value="">Type…</option><option value="mean">Essential</option><option value="ind">Non-essential</option><option value="inv">Invest</option>
+        </select>
+      </div>
+      <button class="big-save" style="margin-top:8px;margin-bottom:0;" onclick="addCategory()">+ Add Category</button>
+    </div>
   </div>`;
-  const expT=noteTags().map(t=>({...t,kind:'exp'}));
+
+  const expT=allTags();
   const repT=repayTags().filter(rt=>!expT.some(et=>et.key===rt.key)).map(t=>({...t,kind:'rep'}));
   _setTags=[...expT,...repT];
+  const known=new Set(cats.map(c=>c.id));
+  const catOpts=cur=>(known.has(cur)?'':'<option value="" selected>Pick category…</option>')+cats.map(c=>`<option value="${c.id}"${cur===c.id?' selected':''}>${esc(c.label)}</option>`).join('');
+  const mergeOpts=i=>'<option value="">Merge into…</option>'+expT.map((x,j)=>j===i?'':`<option value="${j}">${esc(x.label)}</option>`).join('');
+  const row=i=>{
+    const t=_setTags[i];
+    return `<div style="background:var(--card2);border-radius:9px;padding:9px 10px;margin-bottom:6px;${t.hidden?'opacity:0.6;':''}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+        <span onclick="renameTag(${i})" style="flex:1;min-width:0;font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-bottom:1px dashed var(--border);">${esc(t.label)}</span>
+        <span style="font-size:10px;color:var(--muted);flex-shrink:0;">${t.n}× · ${fmt(t.amt)}</span>
+        ${t.hidden
+          ?`<button onclick="unhideTag(${i})" style="background:none;border:1px solid var(--border);border-radius:7px;color:var(--muted);font-size:10px;font-weight:700;padding:4px 7px;cursor:pointer;">Show</button>`
+          :`<button onclick="removeTag(${i})" aria-label="Hide from Add screen" title="Hide from Add screen" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:2px 4px;">✕</button>`}
+      </div>
+      <div style="display:flex;gap:6px;">
+        <select onchange="setTagCat(${i},this.value)" aria-label="Category" style="flex:1.2;${selStyle}">${catOpts(t.cat)}</select>
+        ${t.cat==='food'?`<button onclick="toggleFoodMode(${i})" style="flex-shrink:0;background:${foodIsHome(t.key)?'var(--green-soft)':'var(--yellow-soft)'};border:1px solid ${foodIsHome(t.key)?'var(--green-line)':'var(--yellow-line)'};border-radius:8px;color:${foodIsHome(t.key)?'var(--green)':'var(--yellow)'};font-size:11px;font-weight:700;padding:0 8px;cursor:pointer;">${foodIsHome(t.key)?'Home':'Outside'}</button>`:''}
+        <select onchange="mergeTag(${i},this.value)" aria-label="Merge into another tag" style="flex:1;${selStyle}">${mergeOpts(i)}</select>
+      </div>
+    </div>`;
+  };
+  const idx=expT.map((_,i)=>i);
+  const needs=idx.filter(i=>!known.has(expT[i].cat));
+  const group=nat=>idx.filter(i=>known.has(expT[i].cat)&&natureOf(expT[i].key,expT[i].cat)===nat);
+  const head=(txt,col,n)=>`<div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:${col};margin:14px 0 7px;">${txt} · ${n}</div>`;
+  const blank=S.txs.filter(t=>t.type==='expense'&&!(t.note||'').trim());
+  const blankAmt=blank.reduce((a,t)=>a+t.amount,0);
+  const attention=(needs.length||blank.length)?`<div style="background:var(--yellow-soft);border:1px solid var(--yellow-line);border-radius:10px;padding:10px 12px;margin-bottom:4px;">
+      <div style="font-size:12px;font-weight:700;color:var(--yellow);margin-bottom:${needs.length?'8px':'0'};">Not counted by the Wealth meter${needs.length?' — pick a category for these':''}${blank.length?`${needs.length?'. Also':' —'} ${blank.length} spend${blank.length===1?' has':'s have'} no tag (${fmt(blankAmt)}): open History, tap each one and give it a tag`:''}</div>
+      ${needs.map(row).join('')}
+    </div>`:'';
+  const mean=group('mean'), ind=group('ind'), inv=group('inv');
   document.getElementById('tagsMount').innerHTML=`<div class="card">
-    <div class="sec">Tags &amp; Categories</div>
-    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px;">A tag is the word you typed while logging — its category decides its nature. Tap a tag to rename it, tap a category to re-file it.</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:7px 10px;align-items:center;">
-      <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);padding-bottom:7px;border-bottom:1px solid var(--border);">Tags</div>
-      <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);padding-bottom:7px;border-bottom:1px solid var(--border);">Categories</div>
-      <div></div>
-      ${_setTags.map((t,i)=>{
-        if(t.kind==='rep') return `
-        <span onclick="renameTag(${i})" style="min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-bottom:1px dashed var(--border);">${esc(t.label)}</span>
-        <span style="font-size:10px;font-weight:700;color:var(--purple);background:var(--purple-soft);border:1px solid var(--purple);border-radius:8px;padding:8px 9px;justify-self:start;">Debt</span>
-        <button onclick="removeTag(${i})" aria-label="Hide tag" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:6px 4px;">✕</button>`;
-        return `
-        <span onclick="renameTag(${i})" style="min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-bottom:1px dashed var(--border);">${esc(t.label)}</span>
-        <select onchange="setTagCat(${i},this.value)" style="width:100%;min-width:0;background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:600;padding:9px 6px;">
-          ${allCats().map(c=>`<option value="${c.id}"${t.cat===c.id?' selected':''}>${c.label}</option>`).join('')}
-          <option value="__new__">+ Add new category</option>
-        </select>
-        <div style="display:flex;gap:4px;">
-          ${t.cat==='food'?`<button onclick="toggleFoodMode(${i})" style="background:${foodIsHome(t.key)?'var(--green-soft)':'var(--yellow-soft)'};border:1px solid ${foodIsHome(t.key)?'var(--green-line)':'var(--yellow-line)'};border-radius:8px;color:${foodIsHome(t.key)?'var(--green)':'var(--yellow)'};font-size:11px;font-weight:700;padding:8px 7px;cursor:pointer;">${foodIsHome(t.key)?'Home':'Out'}</button>`:''}
-          <button onclick="removeTag(${i})" aria-label="Hide tag" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:6px 4px;">✕</button>
-        </div>`;}).join('')}
-    </div>
+    <div class="sec">Tags</div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;">Type any tag you like when logging. Here each tag gets one category. Tap a name to rename it · pick its category in the first box · fix a typo with "Merge into…" · ✕ hides it from the Add screen.</div>
+    ${attention}
+    ${mean.length?head('Essential','var(--accent)',mean.length)+mean.map(row).join(''):''}
+    ${ind.length?head('Non-essential','var(--red)',ind.length)+ind.map(row).join(''):''}
+    ${inv.length?head('Invest','var(--green)',inv.length)+inv.map(row).join(''):''}
+    ${repT.length?head('Debt repayment names','var(--purple)',repT.length)+repT.map((t,k)=>{const i=expT.length+k;return `<div style="display:flex;align-items:center;gap:8px;background:var(--card2);border-radius:9px;padding:9px 10px;margin-bottom:6px;">
+      <span onclick="renameTag(${i})" style="flex:1;min-width:0;font-size:13px;font-weight:700;cursor:pointer;border-bottom:1px dashed var(--border);">${esc(t.label)}</span>
+      <button onclick="removeTag(${i})" aria-label="Hide from Add screen" style="background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:2px 4px;">✕</button>
+    </div>`;}).join(''):''}
     <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px;">
       <div class="set-label" style="margin-top:0;">Add a tag</div>
       <div style="display:flex;gap:8px;">
         <input class="note-inp" id="mtName" placeholder="Tag — e.g. School fee" style="flex:1.3;margin-bottom:0;min-width:0;">
-        <select id="mtCat" onchange="handleAddTagCatChange(this)" style="flex:1;background:var(--card2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-size:12px;font-weight:600;padding:9px 8px;">
-          ${allCats().map(c=>`<option value="${c.id}">${c.label}</option>`).join('')}
-          <option value="__new__">+ Add new category</option>
-        </select>
+        <select id="mtCat" style="flex:1;${selStyle}">${cats.map(c=>`<option value="${c.id}">${esc(c.label)}</option>`).join('')}</select>
       </div>
       <button class="big-save" style="margin-top:8px;margin-bottom:0;" onclick="addManualTag()">+ Add Tag</button>
     </div>
